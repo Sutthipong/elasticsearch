@@ -1,14 +1,15 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.sql.plan.physical;
 
-import org.elasticsearch.xpack.sql.expression.Attribute;
+import org.elasticsearch.xpack.ql.expression.Attribute;
+import org.elasticsearch.xpack.ql.tree.NodeInfo;
+import org.elasticsearch.xpack.ql.tree.Source;
 import org.elasticsearch.xpack.sql.plan.logical.Pivot;
-import org.elasticsearch.xpack.sql.tree.NodeInfo;
-import org.elasticsearch.xpack.sql.tree.Source;
 
 import java.util.List;
 import java.util.Objects;
@@ -57,7 +58,6 @@ public class PivotExec extends UnaryExec implements Unexecutable {
 
         PivotExec other = (PivotExec) obj;
 
-        return Objects.equals(pivot, other.pivot)
-                && Objects.equals(child(), other.child());
+        return Objects.equals(pivot, other.pivot) && Objects.equals(child(), other.child());
     }
 }

@@ -1,28 +1,16 @@
 /*
- * Licensed to Elasticsearch under one or more contributor
- * license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright
- * ownership. Elasticsearch licenses this file to you under
- * the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0 and the Server Side Public License, v 1; you may not use this file except
+ * in compliance with, at your election, the Elastic License 2.0 or the Server
+ * Side Public License, v 1.
  */
 
 package org.elasticsearch.bootstrap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.elasticsearch.common.SuppressForbidden;
+import org.elasticsearch.core.SuppressForbidden;
 
 import java.io.IOError;
 import java.security.AccessController;
@@ -32,29 +20,29 @@ class ElasticsearchUncaughtExceptionHandler implements Thread.UncaughtExceptionH
     private static final Logger logger = LogManager.getLogger(ElasticsearchUncaughtExceptionHandler.class);
 
     @Override
-    public void uncaughtException(Thread t, Throwable e) {
-        if (isFatalUncaught(e)) {
+    public void uncaughtException(Thread thread, Throwable t) {
+        if (isFatalUncaught(t)) {
             try {
-                onFatalUncaught(t.getName(), e);
+                onFatalUncaught(thread.getName(), t);
             } finally {
                 // we use specific error codes in case the above notification failed, at least we
                 // will have some indication of the error bringing us down
-                if (e instanceof InternalError) {
+                if (t instanceof InternalError) {
                     halt(128);
-                } else if (e instanceof OutOfMemoryError) {
+                } else if (t instanceof OutOfMemoryError) {
                     halt(127);
-                } else if (e instanceof StackOverflowError) {
+                } else if (t instanceof StackOverflowError) {
                     halt(126);
-                } else if (e instanceof UnknownError) {
+                } else if (t instanceof UnknownError) {
                     halt(125);
-                } else if (e instanceof IOError) {
+                } else if (t instanceof IOError) {
                     halt(124);
                 } else {
                     halt(1);
                 }
             }
         } else {
-            onNonFatalUncaught(t.getName(), e);
+            onNonFatalUncaught(thread.getName(), t);
         }
     }
 
@@ -63,11 +51,20 @@ class ElasticsearchUncaughtExceptionHandler implements Thread.UncaughtExceptionH
     }
 
     void onFatalUncaught(final String threadName, final Throwable t) {
-        logger.error(() -> new ParameterizedMessage("fatal error in thread [{}], exiting", threadName), t);
+        final String message = "fatal error in thread [" + threadName + "], exiting";
+        logErrorMessage(t, message);
     }
 
     void onNonFatalUncaught(final String threadName, final Throwable t) {
-        logger.warn(() -> new ParameterizedMessage("uncaught exception in thread [{}]", threadName), t);
+        final String message = "uncaught exception in thread [" + threadName + "]";
+        logErrorMessage(t, message);
+    }
+
+    private static void logErrorMessage(Throwable t, String message) {
+        AccessController.doPrivileged((PrivilegedAction<Void>) () -> {
+            logger.error(message, t);
+            return null;
+        });
     }
 
     void halt(int status) {

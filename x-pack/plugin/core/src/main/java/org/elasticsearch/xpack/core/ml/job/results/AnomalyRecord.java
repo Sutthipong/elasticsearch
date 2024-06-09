@@ -1,23 +1,26 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.core.ml.job.results;
 
-import org.elasticsearch.common.ParseField;
+import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
-import org.elasticsearch.common.xcontent.ConstructingObjectParser;
-import org.elasticsearch.common.xcontent.ObjectParser.ValueType;
-import org.elasticsearch.common.xcontent.ToXContentObject;
-import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.xcontent.ConstructingObjectParser;
+import org.elasticsearch.xcontent.ObjectParser.ValueType;
+import org.elasticsearch.xcontent.ParseField;
+import org.elasticsearch.xcontent.ToXContentObject;
+import org.elasticsearch.xcontent.XContentBuilder;
+import org.elasticsearch.xpack.core.common.time.TimeUtils;
+import org.elasticsearch.xpack.core.ml.MachineLearningField;
 import org.elasticsearch.xpack.core.ml.job.config.Detector;
 import org.elasticsearch.xpack.core.ml.job.config.Job;
 import org.elasticsearch.xpack.core.ml.utils.ExceptionsHelper;
-import org.elasticsearch.xpack.core.common.time.TimeUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -34,7 +37,6 @@ import java.util.Objects;
  * can be returned if the members have not been set.
  */
 public class AnomalyRecord implements ToXContentObject, Writeable {
-
     /**
      * Result type
      */
@@ -55,6 +57,8 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
     public static final ParseField ACTUAL = new ParseField("actual");
     public static final ParseField INFLUENCERS = new ParseField("influencers");
     public static final ParseField BUCKET_SPAN = new ParseField("bucket_span");
+    public static final ParseField GEO_RESULTS = new ParseField("geo_results");
+    public static final ParseField ANOMALY_SCORE_EXPLANATION = new ParseField("anomaly_score_explanation");
 
     // Used for QueryPage
     public static final ParseField RESULTS_FIELD = new ParseField("records");
@@ -80,16 +84,22 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
     public static final ConstructingObjectParser<AnomalyRecord, Void> STRICT_PARSER = createParser(false);
     public static final ConstructingObjectParser<AnomalyRecord, Void> LENIENT_PARSER = createParser(true);
 
-
     private static ConstructingObjectParser<AnomalyRecord, Void> createParser(boolean ignoreUnknownFields) {
         // As a record contains fields named after the data fields, the parser for the record should always ignore unknown fields.
         // However, it makes sense to offer strict/lenient parsing for other members, e.g. influences, anomaly causes, etc.
-        ConstructingObjectParser<AnomalyRecord, Void> parser = new ConstructingObjectParser<>(RESULT_TYPE_VALUE, true,
-                a -> new AnomalyRecord((String) a[0], (Date) a[1], (long) a[2]));
+        ConstructingObjectParser<AnomalyRecord, Void> parser = new ConstructingObjectParser<>(
+            RESULT_TYPE_VALUE,
+            true,
+            a -> new AnomalyRecord((String) a[0], (Date) a[1], (long) a[2])
+        );
 
         parser.declareString(ConstructingObjectParser.constructorArg(), Job.ID);
-        parser.declareField(ConstructingObjectParser.constructorArg(),
-                p -> TimeUtils.parseTimeField(p, Result.TIMESTAMP.getPreferredName()), Result.TIMESTAMP, ValueType.VALUE);
+        parser.declareField(
+            ConstructingObjectParser.constructorArg(),
+            p -> TimeUtils.parseTimeField(p, Result.TIMESTAMP.getPreferredName()),
+            Result.TIMESTAMP,
+            ValueType.VALUE
+        );
         parser.declareLong(ConstructingObjectParser.constructorArg(), BUCKET_SPAN);
         parser.declareString((anomalyRecord, s) -> {}, Result.RESULT_TYPE);
         parser.declareDouble(AnomalyRecord::setProbability, PROBABILITY);
@@ -110,10 +120,26 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         parser.declareString(AnomalyRecord::setFieldName, FIELD_NAME);
         parser.declareString(AnomalyRecord::setOverFieldName, OVER_FIELD_NAME);
         parser.declareString(AnomalyRecord::setOverFieldValue, OVER_FIELD_VALUE);
-        parser.declareObjectArray(AnomalyRecord::setCauses, ignoreUnknownFields ? AnomalyCause.LENIENT_PARSER : AnomalyCause.STRICT_PARSER,
-                CAUSES);
-        parser.declareObjectArray(AnomalyRecord::setInfluencers, ignoreUnknownFields ? Influence.LENIENT_PARSER : Influence.STRICT_PARSER,
-                INFLUENCERS);
+        parser.declareObjectArray(
+            AnomalyRecord::setCauses,
+            ignoreUnknownFields ? AnomalyCause.LENIENT_PARSER : AnomalyCause.STRICT_PARSER,
+            CAUSES
+        );
+        parser.declareObjectArray(
+            AnomalyRecord::setInfluencers,
+            ignoreUnknownFields ? Influence.LENIENT_PARSER : Influence.STRICT_PARSER,
+            INFLUENCERS
+        );
+        parser.declareObject(
+            AnomalyRecord::setGeoResults,
+            ignoreUnknownFields ? GeoResults.LENIENT_PARSER : GeoResults.STRICT_PARSER,
+            GEO_RESULTS
+        );
+        parser.declareObject(
+            AnomalyRecord::setAnomalyScoreExplanation,
+            ignoreUnknownFields ? AnomalyScoreExplanation.LENIENT_PARSER : AnomalyScoreExplanation.STRICT_PARSER,
+            ANOMALY_SCORE_EXPLANATION
+        );
 
         return parser;
     }
@@ -132,7 +158,9 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
     private List<Double> typical;
     private List<Double> actual;
     private boolean isInterim;
+    private GeoResults geoResults;
 
+    private AnomalyScoreExplanation anomalyScoreExplanation;
     private String fieldName;
 
     private String overFieldName;
@@ -159,6 +187,7 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         jobId = in.readString();
         detectorIndex = in.readInt();
         probability = in.readDouble();
+
         multiBucketImpact = in.readOptionalDouble();
         byFieldName = in.readOptionalString();
         byFieldValue = in.readOptionalString();
@@ -178,14 +207,18 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         }
         isInterim = in.readBoolean();
         if (in.readBoolean()) {
-            causes = in.readList(AnomalyCause::new);
+            causes = in.readCollectionAsList(AnomalyCause::new);
         }
         recordScore = in.readDouble();
         initialRecordScore = in.readDouble();
         timestamp = new Date(in.readLong());
         bucketSpan = in.readLong();
         if (in.readBoolean()) {
-            influences = in.readList(Influence::new);
+            influences = in.readCollectionAsList(Influence::new);
+        }
+        geoResults = in.readOptionalWriteable(GeoResults::new);
+        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_6_0)) {
+            anomalyScoreExplanation = in.readOptionalWriteable(AnomalyScoreExplanation::new);
         }
     }
 
@@ -219,7 +252,7 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         boolean hasCauses = causes != null;
         out.writeBoolean(hasCauses);
         if (hasCauses) {
-            out.writeList(causes);
+            out.writeCollection(causes);
         }
         out.writeDouble(recordScore);
         out.writeDouble(initialRecordScore);
@@ -228,19 +261,17 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         boolean hasInfluencers = influences != null;
         out.writeBoolean(hasInfluencers);
         if (hasInfluencers) {
-            out.writeList(influences);
+            out.writeCollection(influences);
+        }
+        out.writeOptionalWriteable(geoResults);
+        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_6_0)) {
+            out.writeOptionalWriteable(anomalyScoreExplanation);
         }
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject();
-        innerToXContent(builder, params);
-        builder.endObject();
-        return builder;
-    }
-
-    XContentBuilder innerToXContent(XContentBuilder builder, Params params) throws IOException {
         builder.field(Job.ID.getPreferredName(), jobId);
         builder.field(Result.RESULT_TYPE.getPreferredName(), RESULT_TYPE_VALUE);
         builder.field(PROBABILITY.getPreferredName(), probability);
@@ -295,11 +326,18 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         if (influences != null) {
             builder.field(INFLUENCERS.getPreferredName(), influences);
         }
+        if (geoResults != null) {
+            builder.field(GEO_RESULTS.getPreferredName(), geoResults);
+        }
+        if (anomalyScoreExplanation != null) {
+            builder.field(ANOMALY_SCORE_EXPLANATION.getPreferredName(), anomalyScoreExplanation);
+        }
 
         Map<String, LinkedHashSet<String>> inputFields = inputFieldMap();
-        for (String fieldName : inputFields.keySet()) {
-            builder.field(fieldName, inputFields.get(fieldName));
+        for (String inputFieldName : inputFields.keySet()) {
+            builder.field(inputFieldName, inputFields.get(inputFieldName));
         }
+        builder.endObject();
         return builder;
     }
 
@@ -313,19 +351,19 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
 
         if (influences != null) {
             for (Influence inf : influences) {
-                String fieldName = inf.getInfluencerFieldName();
+                String influencerFieldName = inf.getInfluencerFieldName();
                 for (String fieldValue : inf.getInfluencerFieldValues()) {
-                    addInputFieldsToMap(result, fieldName, fieldValue);
+                    addInputFieldsToMap(result, influencerFieldName, fieldValue);
                 }
             }
         }
         return result;
     }
 
-    private void addInputFieldsToMap(Map<String, LinkedHashSet<String>> inputFields, String fieldName, String fieldValue) {
-        if (!Strings.isNullOrEmpty(fieldName) && fieldValue != null) {
-            if (ReservedFieldNames.isValidFieldName(fieldName)) {
-                inputFields.computeIfAbsent(fieldName, k -> new LinkedHashSet<>()).add(fieldValue);
+    private static void addInputFieldsToMap(Map<String, LinkedHashSet<String>> inputFields, String inputFieldName, String fieldValue) {
+        if (Strings.isNullOrEmpty(inputFieldName) == false && fieldValue != null) {
+            if (ReservedFieldNames.isValidFieldName(inputFieldName)) {
+                inputFields.computeIfAbsent(inputFieldName, k -> new LinkedHashSet<>()).add(fieldValue);
             }
         }
     }
@@ -338,12 +376,27 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
      * Data store ID of this record.
      */
     public String getId() {
-        int valuesHash = Objects.hash(byFieldValue, overFieldValue, partitionFieldValue);
-        int length = (byFieldValue == null ? 0 : byFieldValue.length()) +
-                (overFieldValue == null ? 0 : overFieldValue.length()) +
-                (partitionFieldValue == null ? 0 : partitionFieldValue.length());
+        return buildId(jobId, timestamp, bucketSpan, detectorIndex, byFieldValue, overFieldValue, partitionFieldValue);
+    }
 
-        return jobId + "_record_" + timestamp.getTime() + "_" + bucketSpan + "_" + detectorIndex + "_" + valuesHash + "_" + length;
+    static String buildId(
+        String jobId,
+        Date timestamp,
+        long bucketSpan,
+        int detectorIndex,
+        String byFieldValue,
+        String overFieldValue,
+        String partitionFieldValue
+    ) {
+        return jobId
+            + "_record_"
+            + timestamp.getTime()
+            + "_"
+            + bucketSpan
+            + "_"
+            + detectorIndex
+            + "_"
+            + MachineLearningField.valuesToId(byFieldValue, overFieldValue, partitionFieldValue);
     }
 
     public int getDetectorIndex() {
@@ -473,8 +526,8 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         return isInterim;
     }
 
-    public void setInterim(boolean isInterim) {
-        this.isInterim = isInterim;
+    public void setInterim(boolean interim) {
+        this.isInterim = interim;
     }
 
     public String getFieldName() {
@@ -524,16 +577,53 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         this.influences = influencers;
     }
 
+    public GeoResults getGeoResults() {
+        return geoResults;
+    }
+
+    public void setGeoResults(GeoResults geoResults) {
+        this.geoResults = geoResults;
+    }
+
+    public AnomalyScoreExplanation getAnomalyScoreExplanation() {
+        return anomalyScoreExplanation;
+    }
+
+    public void setAnomalyScoreExplanation(AnomalyScoreExplanation anomalyScoreExplanation) {
+        this.anomalyScoreExplanation = anomalyScoreExplanation;
+    }
 
     @Override
     public int hashCode() {
-        return Objects.hash(jobId, detectorIndex, bucketSpan, probability, multiBucketImpact, recordScore,
-                initialRecordScore, typical, actual,function, functionDescription, fieldName,
-                byFieldName, byFieldValue, correlatedByFieldValue, partitionFieldName,
-                partitionFieldValue, overFieldName, overFieldValue, timestamp, isInterim,
-                causes, influences, jobId);
+        return Objects.hash(
+            jobId,
+            detectorIndex,
+            bucketSpan,
+            probability,
+            multiBucketImpact,
+            recordScore,
+            initialRecordScore,
+            typical,
+            actual,
+            function,
+            functionDescription,
+            fieldName,
+            byFieldName,
+            byFieldValue,
+            correlatedByFieldValue,
+            partitionFieldName,
+            partitionFieldValue,
+            overFieldName,
+            overFieldValue,
+            timestamp,
+            isInterim,
+            causes,
+            influences,
+            jobId,
+            geoResults,
+            anomalyScoreExplanation
+        );
     }
-
 
     @Override
     public boolean equals(Object other) {
@@ -548,27 +638,34 @@ public class AnomalyRecord implements ToXContentObject, Writeable {
         AnomalyRecord that = (AnomalyRecord) other;
 
         return Objects.equals(this.jobId, that.jobId)
-                && this.detectorIndex == that.detectorIndex
-                && this.bucketSpan == that.bucketSpan
-                && this.probability == that.probability
-                && Objects.equals(this.multiBucketImpact, that.multiBucketImpact)
-                && this.recordScore == that.recordScore
-                && this.initialRecordScore == that.initialRecordScore
-                && Objects.deepEquals(this.typical, that.typical)
-                && Objects.deepEquals(this.actual, that.actual)
-                && Objects.equals(this.function, that.function)
-                && Objects.equals(this.functionDescription, that.functionDescription)
-                && Objects.equals(this.fieldName, that.fieldName)
-                && Objects.equals(this.byFieldName, that.byFieldName)
-                && Objects.equals(this.byFieldValue, that.byFieldValue)
-                && Objects.equals(this.correlatedByFieldValue, that.correlatedByFieldValue)
-                && Objects.equals(this.partitionFieldName, that.partitionFieldName)
-                && Objects.equals(this.partitionFieldValue, that.partitionFieldValue)
-                && Objects.equals(this.overFieldName, that.overFieldName)
-                && Objects.equals(this.overFieldValue, that.overFieldValue)
-                && Objects.equals(this.timestamp, that.timestamp)
-                && Objects.equals(this.isInterim, that.isInterim)
-                && Objects.equals(this.causes, that.causes)
-                && Objects.equals(this.influences, that.influences);
+            && this.detectorIndex == that.detectorIndex
+            && this.bucketSpan == that.bucketSpan
+            && this.probability == that.probability
+            && Objects.equals(this.multiBucketImpact, that.multiBucketImpact)
+            && this.recordScore == that.recordScore
+            && this.initialRecordScore == that.initialRecordScore
+            && Objects.deepEquals(this.typical, that.typical)
+            && Objects.deepEquals(this.actual, that.actual)
+            && Objects.equals(this.function, that.function)
+            && Objects.equals(this.functionDescription, that.functionDescription)
+            && Objects.equals(this.fieldName, that.fieldName)
+            && Objects.equals(this.byFieldName, that.byFieldName)
+            && Objects.equals(this.byFieldValue, that.byFieldValue)
+            && Objects.equals(this.correlatedByFieldValue, that.correlatedByFieldValue)
+            && Objects.equals(this.partitionFieldName, that.partitionFieldName)
+            && Objects.equals(this.partitionFieldValue, that.partitionFieldValue)
+            && Objects.equals(this.overFieldName, that.overFieldName)
+            && Objects.equals(this.overFieldValue, that.overFieldValue)
+            && Objects.equals(this.timestamp, that.timestamp)
+            && Objects.equals(this.isInterim, that.isInterim)
+            && Objects.equals(this.causes, that.causes)
+            && Objects.equals(this.geoResults, that.geoResults)
+            && Objects.equals(this.anomalyScoreExplanation, that.anomalyScoreExplanation)
+            && Objects.equals(this.influences, that.influences);
+    }
+
+    @Override
+    public String toString() {
+        return Strings.toString(this, true, true);
     }
 }

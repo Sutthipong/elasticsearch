@@ -1,15 +1,16 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 
 package org.elasticsearch.xpack.sql.execution.search;
 
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.search.aggregations.bucket.composite.CompositeAggregation;
-import org.elasticsearch.xpack.sql.execution.search.extractor.BucketExtractor;
-import org.elasticsearch.xpack.sql.type.Schema;
+import org.elasticsearch.xpack.ql.execution.search.extractor.BucketExtractor;
+import org.elasticsearch.xpack.ql.type.Schema;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -25,9 +26,17 @@ class PivotRowSet extends SchemaCompositeAggRowSet {
     private final List<Object[]> data;
     private final Map<String, Object> lastAfterKey;
 
-    PivotRowSet(Schema schema, List<BucketExtractor> exts, BitSet mask, SearchResponse response, int limit,
-            Map<String, Object> previousLastKey) {
-        super(schema, exts, mask, response, limit);
+    PivotRowSet(
+        Schema schema,
+        List<BucketExtractor> exts,
+        BitSet mask,
+        SearchResponse response,
+        int sizeRequested,
+        int limit,
+        Map<String, Object> previousLastKey,
+        boolean mightProducePartialPages
+    ) {
+        super(schema, exts, mask, response, sizeRequested, limit, mightProducePartialPages);
 
         data = buckets.isEmpty() ? emptyList() : new ArrayList<>();
 
@@ -79,7 +88,7 @@ class PivotRowSet extends SchemaCompositeAggRowSet {
                 }
             }
         }
-        
+
         // check the last group using the following:
         // a. limit has been reached, the rest of the data is ignored.
         if (limit > 0 && data.size() == limit) {
@@ -108,7 +117,7 @@ class PivotRowSet extends SchemaCompositeAggRowSet {
         lastAfterKey = currentRowGroupKey;
     }
 
-    private boolean hasNull(Object[] currentRow) {
+    private static boolean hasNull(Object[] currentRow) {
         for (Object object : currentRow) {
             if (object == null) {
                 return true;

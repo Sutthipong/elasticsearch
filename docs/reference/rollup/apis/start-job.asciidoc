@@ -1,5 +1,4 @@
 [role="xpack"]
-[testenv="basic"]
 [[rollup-start-job]]
 === Start {rollup-jobs} API
 [subs="attributes"]
@@ -7,9 +6,9 @@
 <titleabbrev>Start {rollup-jobs}</titleabbrev>
 ++++
 
-Starts an existing, stopped {rollup-job}.
+deprecated::[8.11.0,"Rollups will be removed in a future version. Use <<downsampling,downsampling>> instead."]
 
-experimental[]
+Starts an existing, stopped {rollup-job}.
 
 [[rollup-start-job-request]]
 ==== {api-request-title}
@@ -19,9 +18,9 @@ experimental[]
 [[rollup-start-job-prereqs]]
 ==== {api-prereq-title}
 
-* You must have `manage` or `manage_rollup` cluster privileges to use this API.
-For more information, see
-{stack-ov}/security-privileges.html[Security privileges].
+* If the {es} {security-features} are enabled, you must have `manage` or
+`manage_rollup` cluster privileges to use this API. For more information, see
+<<security-privileges>>.
 
 [[rollup-start-job-desc]]
 ==== {api-description-title}
@@ -34,7 +33,7 @@ to start a job that is already started, nothing happens.
 
 `<job_id>`::
   (Required, string) Identifier for the {rollup-job}.
-  
+
 [[rollup-start-job-response-codes]]
 ==== {api-response-codes-title}
 

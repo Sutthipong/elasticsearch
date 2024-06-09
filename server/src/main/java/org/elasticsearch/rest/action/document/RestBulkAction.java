@@ -1,72 +1,62 @@
 /*
- * Licensed to Elasticsearch under one or more contributor
- * license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright
- * ownership. Elasticsearch licenses this file to you under
- * the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0 and the Server Side Public License, v 1; you may not use this file except
+ * in compliance with, at your election, the Elastic License 2.0 or the Server
+ * Side Public License, v 1.
  */
 
 package org.elasticsearch.rest.action.document;
 
-import org.apache.logging.log4j.LogManager;
+import org.elasticsearch.action.DocWriteRequest;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkShardRequest;
 import org.elasticsearch.action.support.ActiveShardCount;
-import org.elasticsearch.client.Requests;
-import org.elasticsearch.client.node.NodeClient;
-import org.elasticsearch.common.logging.DeprecationLogger;
+import org.elasticsearch.client.internal.node.NodeClient;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.core.RestApiVersion;
 import org.elasticsearch.rest.BaseRestHandler;
-import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
-import org.elasticsearch.rest.action.RestStatusToXContentListener;
-import org.elasticsearch.rest.action.search.RestSearchAction;
+import org.elasticsearch.rest.Scope;
+import org.elasticsearch.rest.ServerlessScope;
+import org.elasticsearch.rest.action.RestRefCountedChunkedToXContentListener;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.elasticsearch.rest.RestRequest.Method.POST;
 import static org.elasticsearch.rest.RestRequest.Method.PUT;
 
 /**
  * <pre>
- * { "index" : { "_index" : "test", "_type" : "type1", "_id" : "1" }
+ * { "index" : { "_index" : "test", "_id" : "1" }
  * { "type1" : { "field1" : "value1" } }
- * { "delete" : { "_index" : "test", "_type" : "type1", "_id" : "2" } }
- * { "create" : { "_index" : "test", "_type" : "type1", "_id" : "1" }
+ * { "delete" : { "_index" : "test", "_id" : "2" } }
+ * { "create" : { "_index" : "test", "_id" : "1" }
  * { "type1" : { "field1" : "value1" } }
  * </pre>
  */
+@ServerlessScope(Scope.PUBLIC)
 public class RestBulkAction extends BaseRestHandler {
+    public static final String TYPES_DEPRECATION_MESSAGE = "[types removal] Specifying types in bulk requests is deprecated.";
 
     private final boolean allowExplicitIndex;
-    private static final DeprecationLogger deprecationLogger = new DeprecationLogger(LogManager.getLogger(RestSearchAction.class));
-    public static final String TYPES_DEPRECATION_MESSAGE = "[types removal]" +
-    " Specifying types in bulk requests is deprecated.";
 
-    public RestBulkAction(Settings settings, RestController controller) {
-        controller.registerHandler(POST, "/_bulk", this);
-        controller.registerHandler(PUT, "/_bulk", this);
-        controller.registerHandler(POST, "/{index}/_bulk", this);
-        controller.registerHandler(PUT, "/{index}/_bulk", this);
-
-        // Deprecated typed endpoints.
-        controller.registerHandler(POST, "/{index}/{type}/_bulk", this);
-        controller.registerHandler(PUT, "/{index}/{type}/_bulk", this);
-
+    public RestBulkAction(Settings settings) {
         this.allowExplicitIndex = MULTI_ALLOW_EXPLICIT_INDEX.get(settings);
+    }
+
+    @Override
+    public List<Route> routes() {
+        return List.of(
+            new Route(POST, "/_bulk"),
+            new Route(PUT, "/_bulk"),
+            new Route(POST, "/{index}/_bulk"),
+            new Route(PUT, "/{index}/_bulk"),
+            Route.builder(POST, "/{index}/{type}/_bulk").deprecated(TYPES_DEPRECATION_MESSAGE, RestApiVersion.V_7).build(),
+            Route.builder(PUT, "/{index}/{type}/_bulk").deprecated(TYPES_DEPRECATION_MESSAGE, RestApiVersion.V_7).build()
+        );
     }
 
     @Override
@@ -76,31 +66,47 @@ public class RestBulkAction extends BaseRestHandler {
 
     @Override
     public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
-        BulkRequest bulkRequest = Requests.bulkRequest();
-        String defaultIndex = request.param("index");
-        String defaultType = request.param("type");
-        if (defaultType == null) {
-            defaultType = MapperService.SINGLE_MAPPING_NAME;
-        } else {
-            deprecationLogger.deprecatedAndMaybeLog("bulk_with_types", RestBulkAction.TYPES_DEPRECATION_MESSAGE);
+        if (request.getRestApiVersion() == RestApiVersion.V_7 && request.hasParam("type")) {
+            request.param("type");
         }
+        BulkRequest bulkRequest = new BulkRequest();
+        String defaultIndex = request.param("index");
         String defaultRouting = request.param("routing");
         FetchSourceContext defaultFetchSourceContext = FetchSourceContext.parseFromRestRequest(request);
         String defaultPipeline = request.param("pipeline");
+        boolean defaultListExecutedPipelines = request.paramAsBoolean("list_executed_pipelines", false);
         String waitForActiveShards = request.param("wait_for_active_shards");
         if (waitForActiveShards != null) {
             bulkRequest.waitForActiveShards(ActiveShardCount.parseString(waitForActiveShards));
         }
+        Boolean defaultRequireAlias = request.paramAsBoolean(DocWriteRequest.REQUIRE_ALIAS, false);
+        boolean defaultRequireDataStream = request.paramAsBoolean(DocWriteRequest.REQUIRE_DATA_STREAM, false);
         bulkRequest.timeout(request.paramAsTime("timeout", BulkShardRequest.DEFAULT_TIMEOUT));
         bulkRequest.setRefreshPolicy(request.param("refresh"));
-        bulkRequest.add(request.requiredContent(), defaultIndex, defaultType, defaultRouting,
-            defaultFetchSourceContext, defaultPipeline, allowExplicitIndex, request.getXContentType());
+        bulkRequest.add(
+            request.requiredContent(),
+            defaultIndex,
+            defaultRouting,
+            defaultFetchSourceContext,
+            defaultPipeline,
+            defaultRequireAlias,
+            defaultRequireDataStream,
+            defaultListExecutedPipelines,
+            allowExplicitIndex,
+            request.getXContentType(),
+            request.getRestApiVersion()
+        );
 
-        return channel -> client.bulk(bulkRequest, new RestStatusToXContentListener<>(channel));
+        return channel -> client.bulk(bulkRequest, new RestRefCountedChunkedToXContentListener<>(channel));
     }
 
     @Override
     public boolean supportsContentStream() {
+        return true;
+    }
+
+    @Override
+    public boolean allowsUnsafeBuffers() {
         return true;
     }
 }

@@ -1,5 +1,4 @@
 [role="xpack"]
-[testenv="basic"]
 [[sql-getting-started]]
 == Getting Started with SQL
 
@@ -8,7 +7,7 @@ an index with some data to experiment with:
 
 [source,console]
 --------------------------------------------------
-PUT /library/book/_bulk?refresh
+PUT /library/_bulk?refresh
 {"index":{"_id": "Leviathan Wakes"}}
 {"name": "Leviathan Wakes", "author": "James S.A. Corey", "release_date": "2011-06-02", "page_count": 561}
 {"index":{"_id": "Hyperion"}}
@@ -17,13 +16,13 @@ PUT /library/book/_bulk?refresh
 {"name": "Dune", "author": "Frank Herbert", "release_date": "1965-06-01", "page_count": 604}
 --------------------------------------------------
 
-And now you can execute SQL using the <<sql-rest>> right away:
+And now you can execute SQL using the <<sql-search-api,SQL search API>>:
 
 [source,console]
 --------------------------------------------------
 POST /_sql?format=txt
 {
-    "query": "SELECT * FROM library WHERE release_date < '2000-01-01'"
+  "query": "SELECT * FROM library WHERE release_date < '2000-01-01'"
 }
 --------------------------------------------------
 // TEST[continued]
@@ -41,7 +40,7 @@ Frank Herbert  |Dune           |604            |1965-06-01T00:00:00.000Z
 // TESTRESPONSE[non_json]
 
 You can also use the <<sql-cli>>. There is a script to start it
-shipped in x-pack's bin directory:
+shipped in the Elasticsearch `bin` directory:
 
 [source,bash]
 --------------------------------------------------

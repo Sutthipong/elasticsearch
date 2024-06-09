@@ -1,43 +1,27 @@
 /*
- * Licensed to Elasticsearch under one or more contributor
- * license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright
- * ownership. Elasticsearch licenses this file to you under
- * the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0 and the Server Side Public License, v 1; you may not use this file except
+ * in compliance with, at your election, the Elastic License 2.0 or the Server
+ * Side Public License, v 1.
  */
 package org.elasticsearch.indices;
 
-import org.apache.lucene.index.DirectoryReader;
-import org.elasticsearch.Version;
-import org.elasticsearch.action.admin.indices.forcemerge.ForceMergeResponse;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.common.CheckedFunction;
+import org.elasticsearch.cluster.node.DiscoveryNodeUtils;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
-import org.elasticsearch.common.xcontent.XContentType;
-import org.elasticsearch.index.IndexService;
-import org.elasticsearch.index.engine.Engine;
+import org.elasticsearch.index.engine.InternalEngine;
+import org.elasticsearch.index.engine.InternalEngineFactory;
 import org.elasticsearch.index.shard.IndexShard;
-import org.elasticsearch.index.shard.IndexShardIT;
 import org.elasticsearch.index.shard.IndexShardTestCase;
-import org.elasticsearch.indices.breaker.NoneCircuitBreakerService;
+import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.indices.recovery.RecoveryState;
-import org.elasticsearch.test.ESSingleNodeTestCase;
 import org.elasticsearch.threadpool.Scheduler.Cancellable;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.threadpool.ThreadPoolStats;
+import org.elasticsearch.xcontent.XContentType;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -47,15 +31,16 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.lessThan;
 
-public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
+public class IndexingMemoryControllerTests extends IndexShardTestCase {
 
     static class MockController extends IndexingMemoryController {
 
@@ -69,10 +54,14 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         final Set<IndexShard> throttled = new HashSet<>();
 
         MockController(Settings settings) {
-            super(Settings.builder()
-                            .put("indices.memory.interval", "200h") // disable it
-                            .put(settings)
-                            .build(), null, null);
+            super(
+                Settings.builder()
+                    .put("indices.memory.interval", "200h") // disable it
+                    .put(settings)
+                    .build(),
+                null,
+                null
+            );
         }
 
         public void deleteShard(IndexShard shard) {
@@ -101,11 +90,10 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         }
 
         @Override
-        protected void checkIdle(IndexShard shard, long inactiveTimeNS) {
-        }
+        protected void checkIdle(IndexShard shard, long inactiveTimeNS) {}
 
         @Override
-        public void writeIndexingBufferAsync(IndexShard shard) {
+        public void enqueueWriteIndexingBuffer(IndexShard shard) {
             long bytes = indexBufferRAMBytesUsed.put(shard, 0L);
             writingBytes.put(shard, writingBytes.get(shard) + bytes);
             indexBufferRAMBytesUsed.put(shard, 0L);
@@ -157,7 +145,7 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
                 writingBytes.put(shard, 0L);
             }
             // Each doc we index takes up a megabyte!
-            bytes += 1024*1024;
+            bytes += 1024 * 1024;
             indexBufferRAMBytesUsed.put(shard, bytes);
             forceCheck();
         }
@@ -168,19 +156,21 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         }
     }
 
-    public void testShardAdditionAndRemoval() {
-        createIndex("test", Settings.builder().put("index.number_of_shards", 3).put("index.number_of_replicas", 0).build());
-        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexService test = indicesService.indexService(resolveIndex("test"));
+    public void testShardAdditionAndRemoval() throws IOException {
 
-        MockController controller = new MockController(Settings.builder()
-                                                       .put("indices.memory.index_buffer_size", "4mb").build());
-        IndexShard shard0 = test.getShard(0);
+        MockController controller = new MockController(Settings.builder().put("indices.memory.index_buffer_size", "4mb").build());
+        IndexShard shard0 = newStartedShard(
+            p -> newShard(p, new ShardId("index0", "uuid0", 0), Settings.EMPTY, new InternalEngineFactory()),
+            randomBoolean()
+        );
         controller.simulateIndexing(shard0);
         controller.assertBuffer(shard0, 1);
 
         // add another shard
-        IndexShard shard1 = test.getShard(1);
+        IndexShard shard1 = newStartedShard(
+            p -> newShard(p, new ShardId("index1", "uuid1", 0), Settings.EMPTY, new InternalEngineFactory()),
+            randomBoolean()
+        );
         controller.simulateIndexing(shard1);
         controller.assertBuffer(shard0, 1);
         controller.assertBuffer(shard1, 1);
@@ -195,24 +185,25 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         controller.forceCheck();
 
         // add a new one
-        IndexShard shard2 = test.getShard(2);
+        IndexShard shard2 = newStartedShard();
         controller.simulateIndexing(shard2);
         controller.assertBuffer(shard2, 1);
+        closeShards(shard0, shard1, shard2);
     }
 
-    public void testActiveInactive() {
+    public void testActiveInactive() throws IOException {
 
-        createIndex("test", Settings.builder().put("index.number_of_shards", 2).put("index.number_of_replicas", 0).build());
-        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexService test = indicesService.indexService(resolveIndex("test"));
+        MockController controller = new MockController(Settings.builder().put("indices.memory.index_buffer_size", "5mb").build());
 
-        MockController controller = new MockController(Settings.builder()
-                                                       .put("indices.memory.index_buffer_size", "5mb")
-                                                       .build());
-
-        IndexShard shard0 = test.getShard(0);
+        IndexShard shard0 = newStartedShard(
+            p -> newShard(p, new ShardId("index0", "uuid0", 0), Settings.EMPTY, new InternalEngineFactory()),
+            randomBoolean()
+        );
         controller.simulateIndexing(shard0);
-        IndexShard shard1 = test.getShard(1);
+        IndexShard shard1 = newStartedShard(
+            p -> newShard(p, new ShardId("index1", "uuid1", 0), Settings.EMPTY, new InternalEngineFactory()),
+            randomBoolean()
+        );
         controller.simulateIndexing(shard1);
 
         controller.assertBuffer(shard0, 1);
@@ -224,7 +215,7 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         controller.assertBuffer(shard0, 2);
         controller.assertBuffer(shard1, 2);
 
-        // index into one shard only, crosses the 5mb limit, so shard1 is refreshed
+        // index into one shard only, crosses the 5mb limit, so shard0 is refreshed
         controller.simulateIndexing(shard0);
         controller.simulateIndexing(shard0);
         controller.assertBuffer(shard0, 0);
@@ -237,85 +228,103 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         controller.simulateIndexing(shard1);
         // shard1 crossed 5 mb and is now cleared:
         controller.assertBuffer(shard1, 0);
+        closeShards(shard0, shard1);
     }
 
     public void testMinBufferSizes() {
-        MockController controller = new MockController(Settings.builder()
-                                                       .put("indices.memory.index_buffer_size", "0.001%")
-                                                       .put("indices.memory.min_index_buffer_size", "6mb").build());
+        MockController controller = new MockController(
+            Settings.builder().put("indices.memory.index_buffer_size", "0.001%").put("indices.memory.min_index_buffer_size", "6mb").build()
+        );
 
         assertThat(controller.indexingBufferSize(), equalTo(new ByteSizeValue(6, ByteSizeUnit.MB)));
     }
 
     public void testNegativeMinIndexBufferSize() {
-        Exception e = expectThrows(IllegalArgumentException.class,
-                                   () -> new MockController(Settings.builder()
-                                                            .put("indices.memory.min_index_buffer_size", "-6mb").build()));
+        Exception e = expectThrows(
+            IllegalArgumentException.class,
+            () -> new MockController(Settings.builder().put("indices.memory.min_index_buffer_size", "-6mb").build())
+        );
         assertEquals("failed to parse setting [indices.memory.min_index_buffer_size] with value [-6mb] as a size in bytes", e.getMessage());
 
     }
 
     public void testNegativeInterval() {
-        Exception e = expectThrows(IllegalArgumentException.class,
-                                   () -> new MockController(Settings.builder()
-                                                            .put("indices.memory.interval", "-42s").build()));
-        assertEquals("failed to parse value [-42s] for setting [indices.memory.interval], must be >= [0ms]", e.getMessage());
+        Exception e = expectThrows(
+            IllegalArgumentException.class,
+            () -> new MockController(Settings.builder().put("indices.memory.interval", "-42s").build())
+        );
+        assertEquals(
+            "failed to parse setting [indices.memory.interval] with value "
+                + "[-42s] as a time value: negative durations are not supported",
+            e.getMessage()
+        );
 
     }
 
     public void testNegativeShardInactiveTime() {
-        Exception e = expectThrows(IllegalArgumentException.class,
-                                   () -> new MockController(Settings.builder()
-                                                            .put("indices.memory.shard_inactive_time", "-42s").build()));
-        assertEquals("failed to parse value [-42s] for setting [indices.memory.shard_inactive_time], must be >= [0ms]", e.getMessage());
+        Exception e = expectThrows(
+            IllegalArgumentException.class,
+            () -> new MockController(Settings.builder().put("indices.memory.shard_inactive_time", "-42s").build())
+        );
+        assertEquals(
+            "failed to parse setting [indices.memory.shard_inactive_time] with value "
+                + "[-42s] as a time value: negative durations are not supported",
+            e.getMessage()
+        );
 
     }
 
     public void testNegativeMaxIndexBufferSize() {
-        Exception e = expectThrows(IllegalArgumentException.class,
-                                   () -> new MockController(Settings.builder()
-                                                            .put("indices.memory.max_index_buffer_size", "-6mb").build()));
+        Exception e = expectThrows(
+            IllegalArgumentException.class,
+            () -> new MockController(Settings.builder().put("indices.memory.max_index_buffer_size", "-6mb").build())
+        );
         assertEquals("failed to parse setting [indices.memory.max_index_buffer_size] with value [-6mb] as a size in bytes", e.getMessage());
 
     }
 
     public void testMaxBufferSizes() {
-        MockController controller = new MockController(Settings.builder()
-                                                       .put("indices.memory.index_buffer_size", "90%")
-                                                       .put("indices.memory.max_index_buffer_size", "6mb").build());
+        MockController controller = new MockController(
+            Settings.builder().put("indices.memory.index_buffer_size", "90%").put("indices.memory.max_index_buffer_size", "6mb").build()
+        );
 
         assertThat(controller.indexingBufferSize(), equalTo(new ByteSizeValue(6, ByteSizeUnit.MB)));
     }
 
     public void testThrottling() throws Exception {
-        createIndex("test", Settings.builder().put("index.number_of_shards", 3).put("index.number_of_replicas", 0).build());
-        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexService test = indicesService.indexService(resolveIndex("test"));
 
-        MockController controller = new MockController(Settings.builder()
-                                                       .put("indices.memory.index_buffer_size", "4mb").build());
-        IndexShard shard0 = test.getShard(0);
-        IndexShard shard1 = test.getShard(1);
+        MockController controller = new MockController(Settings.builder().put("indices.memory.index_buffer_size", "4mb").build());
+        IndexShard shard0 = newStartedShard(
+            p -> newShard(p, new ShardId("index0", "uuid0", 0), Settings.EMPTY, new InternalEngineFactory()),
+            randomBoolean()
+        );
+        IndexShard shard1 = newStartedShard(
+            p -> newShard(p, new ShardId("index1", "uuid1", 0), Settings.EMPTY, new InternalEngineFactory()),
+            randomBoolean()
+        );
+
+        assertThat(shard0.routingEntry().shardId(), lessThan(shard1.routingEntry().shardId()));
+
         controller.simulateIndexing(shard0);
         controller.simulateIndexing(shard0);
-        controller.simulateIndexing(shard0);
-        controller.assertBuffer(shard0, 3);
+        controller.assertBuffer(shard0, 2);
         controller.simulateIndexing(shard1);
         controller.simulateIndexing(shard1);
+        controller.simulateIndexing(shard1);
 
-        // We are now using 5 MB, so we should be writing shard0 since it's using the most heap:
-        controller.assertWriting(shard0, 3);
+        // We are now using 5 MB, so we should be writing shard0 since shards get flushed by increasing shard id, even though shard1 uses
+        // more RAM buffer
+        controller.assertWriting(shard0, 2);
         controller.assertWriting(shard1, 0);
         controller.assertBuffer(shard0, 0);
-        controller.assertBuffer(shard1, 2);
+        controller.assertBuffer(shard1, 3);
 
         controller.simulateIndexing(shard0);
         controller.simulateIndexing(shard1);
-        controller.simulateIndexing(shard1);
 
-        // Now we are still writing 3 MB (shard0), and using 5 MB index buffers, so we should now 1) be writing shard1,
-        // and 2) be throttling shard1:
-        controller.assertWriting(shard0, 3);
+        // We crossed the limit again, so now we should be writing the next shard after shard0: shard1. And since bytes are still being
+        // written and haven't been released yet, we should be throttling the same shard we flushed: shard1.
+        controller.assertWriting(shard0, 2);
         controller.assertWriting(shard1, 4);
         controller.assertBuffer(shard0, 1);
         controller.assertBuffer(shard1, 0);
@@ -332,7 +341,7 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         controller.simulateIndexing(shard0);
 
         // Now we are using 5 MB again, so shard0 should also be writing and now also be throttled:
-        controller.assertWriting(shard0, 8);
+        controller.assertWriting(shard0, 7);
         controller.assertWriting(shard1, 4);
         controller.assertBuffer(shard0, 0);
         controller.assertBuffer(shard1, 0);
@@ -346,117 +355,96 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         controller.forceCheck();
         controller.assertNotThrottled(shard0);
         controller.assertNotThrottled(shard1);
-    }
-
-    // #10312
-    public void testDeletesAloneCanTriggerRefresh() throws Exception {
-        createIndex("index",
-                    Settings.builder().put("index.number_of_shards", 1)
-                                      .put("index.number_of_replicas", 0)
-                                      .put("index.refresh_interval", -1)
-                                      .build());
-        ensureGreen();
-
-        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexService indexService = indicesService.indexService(resolveIndex("index"));
-        IndexShard shard = indexService.getShardOrNull(0);
-        assertNotNull(shard);
-
-        for (int i = 0; i < 100; i++) {
-            String id = Integer.toString(i);
-            client().prepareIndex("index", "type", id).setSource("field", "value").get();
-        }
-
-        // Force merge so we know all merges are done before we start deleting:
-        ForceMergeResponse r = client().admin().indices().prepareForceMerge().setMaxNumSegments(1).execute().actionGet();
-        assertNoFailures(r);
-
-        // Make a shell of an IMC to check up on indexing buffer usage:
-        Settings settings = Settings.builder().put("indices.memory.index_buffer_size", "1kb").build();
-
-        // TODO: would be cleaner if I could pass this 1kb setting to the single node this test created....
-        IndexingMemoryController imc = new IndexingMemoryController(settings, null, null) {
-            @Override
-            protected List<IndexShard> availableShards() {
-                return Collections.singletonList(shard);
-            }
-
-            @Override
-            protected long getIndexBufferRAMBytesUsed(IndexShard shard) {
-                return shard.getIndexBufferRAMBytesUsed();
-            }
-
-            @Override
-            protected void writeIndexingBufferAsync(IndexShard shard) {
-                // just do it sync'd for this test
-                shard.writeIndexingBuffer();
-            }
-
-            @Override
-            protected Cancellable scheduleTask(ThreadPool threadPool) {
-                return null;
-            }
-        };
-
-        for (int i = 0; i < 100; i++) {
-            String id = Integer.toString(i);
-            client().prepareDelete("index", "type", id).get();
-        }
-
-        final long indexingBufferBytes1 = shard.getIndexBufferRAMBytesUsed();
-
-        imc.forceCheck();
-
-        // We must assertBusy because the writeIndexingBufferAsync is done in background (REFRESH) thread pool:
-        assertBusy(() -> {
-            try (Engine.Searcher s2 = shard.acquireSearcher("index")) {
-                // 100 buffered deletes will easily exceed our 1 KB indexing buffer so it should trigger a write:
-                final long indexingBufferBytes2 = shard.getIndexBufferRAMBytesUsed();
-                assertTrue(indexingBufferBytes2 < indexingBufferBytes1);
-            }
-        });
+        closeShards(shard0, shard1);
     }
 
     public void testTranslogRecoveryWorksWithIMC() throws IOException {
-        createIndex("test");
-        ensureGreen();
-        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexService indexService = indicesService.indexService(resolveIndex("test"));
-        IndexShard shard = indexService.getShardOrNull(0);
+        IndexShard shard = newStartedShard(true);
         for (int i = 0; i < 100; i++) {
-            client().prepareIndex("test", "test", Integer.toString(i)).setSource("{\"foo\" : \"bar\"}", XContentType.JSON).get();
+            indexDoc(shard, Integer.toString(i), "{\"foo\" : \"bar\"}", XContentType.JSON, null);
         }
-
-        CheckedFunction<DirectoryReader, DirectoryReader, IOException> wrapper = directoryReader -> directoryReader;
-        shard.close("simon says", false);
+        closeShardNoCheck(shard);
         AtomicReference<IndexShard> shardRef = new AtomicReference<>();
         Settings settings = Settings.builder().put("indices.memory.index_buffer_size", "50kb").build();
-        Iterable<IndexShard> iterable = () -> (shardRef.get() == null) ? Collections.<IndexShard>emptyList().iterator()
+        Iterable<IndexShard> iterable = () -> (shardRef.get() == null)
+            ? Collections.emptyIterator()
             : Collections.singleton(shardRef.get()).iterator();
         AtomicInteger flushes = new AtomicInteger();
-        IndexingMemoryController imc = new IndexingMemoryController(settings, client().threadPool(), iterable) {
+        IndexingMemoryController imc = new IndexingMemoryController(settings, threadPool, iterable) {
             @Override
-            protected void writeIndexingBufferAsync(IndexShard shard) {
+            protected void enqueueWriteIndexingBuffer(IndexShard shard) {
                 assertEquals(shard, shardRef.get());
                 flushes.incrementAndGet();
                 shard.writeIndexingBuffer();
             }
         };
-        final IndexShard newShard = IndexShardIT.newIndexShard(indexService, shard, wrapper, new NoneCircuitBreakerService(), imc);
-        shardRef.set(newShard);
-        try {
-            assertEquals(0, imc.availableShards().size());
-            ShardRouting routing = newShard.routingEntry();
-            DiscoveryNode localNode = new DiscoveryNode("foo", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT);
-            newShard.markAsRecovering("store", new RecoveryState(routing, localNode, null));
+        shard = reinitShard(shard, imc);
+        shardRef.set(shard);
+        assertEquals(0, imc.availableShards().size());
+        DiscoveryNode localNode = DiscoveryNodeUtils.builder("foo").roles(emptySet()).build();
+        shard.markAsRecovering("store", new RecoveryState(shard.routingEntry(), localNode, null));
 
-            assertEquals(1, imc.availableShards().size());
-            assertTrue(newShard.recoverFromStore());
-            assertTrue("we should have flushed in IMC at least once but did: " + flushes.get(), flushes.get() >= 1);
-            IndexShardTestCase.updateRoutingEntry(newShard, routing.moveToStarted());
-        } finally {
-            newShard.close("simon says", false);
-        }
+        assertEquals(1, imc.availableShards().size());
+        assertTrue(recoverFromStore(shard));
+        assertThat("we should have flushed in IMC at least once", flushes.get(), greaterThanOrEqualTo(1));
+        closeShards(shard);
     }
 
+    ThreadPoolStats.Stats getRefreshThreadPoolStats() {
+        final ThreadPoolStats stats = threadPool.stats();
+        for (ThreadPoolStats.Stats s : stats) {
+            if (s.name().equals(ThreadPool.Names.REFRESH)) {
+                return s;
+            }
+        }
+        throw new AssertionError("refresh thread pool stats not found [" + stats + "]");
+    }
+
+    public void testSkipIfPendingAlready() throws Exception {
+        final CountDownLatch latch = new CountDownLatch(1);
+        IndexShard shard = newStartedShard(randomBoolean(), Settings.EMPTY, config -> new InternalEngine(config) {
+            @Override
+            public void writeIndexingBuffer() throws IOException {
+                safeAwait(latch);
+                super.writeIndexingBuffer();
+            }
+        });
+        final IndexingMemoryController controller = new IndexingMemoryController(
+            Settings.builder()
+                .put("indices.memory.interval", "200h") // disable it
+                .put("indices.memory.index_buffer_size", "1024b")
+                .build(),
+            threadPool,
+            Collections.singleton(shard)
+        ) {
+            @Override
+            protected long getIndexBufferRAMBytesUsed(IndexShard shard) {
+                return randomLongBetween(1025, 10 * 1024 * 1024);
+            }
+
+            @Override
+            protected long getShardWritingBytes(IndexShard shard) {
+                return 0L;
+            }
+        };
+        ThreadPoolStats.Stats beforeStats = getRefreshThreadPoolStats();
+        int iterations = randomIntBetween(1000, 2000);
+        for (int i = 0; i < iterations; i++) {
+            controller.forceCheck();
+        }
+        assertBusy(() -> {
+            ThreadPoolStats.Stats stats = getRefreshThreadPoolStats();
+            assertThat(stats.active(), greaterThanOrEqualTo(1));
+        });
+        latch.countDown();
+        assertBusy(() -> {
+            ThreadPoolStats.Stats stats = getRefreshThreadPoolStats();
+            assertThat(stats.queue(), equalTo(0));
+        });
+        ThreadPoolStats.Stats afterStats = getRefreshThreadPoolStats();
+        // The number of completed tasks should be in the order of the size of the refresh thread pool, way below the number of iterations,
+        // since we would not queue a shard to write its indexing buffer if it's already in the queue.
+        assertThat(afterStats.completed() - beforeStats.completed(), lessThan(100L));
+        closeShards(shard);
+    }
 }

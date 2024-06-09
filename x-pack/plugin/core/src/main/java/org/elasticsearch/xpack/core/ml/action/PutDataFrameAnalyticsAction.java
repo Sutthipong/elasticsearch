@@ -1,24 +1,27 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.core.ml.action;
 
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
+import org.elasticsearch.action.ValidateActions;
 import org.elasticsearch.action.support.master.AcknowledgedRequest;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequestBuilder;
-import org.elasticsearch.client.ElasticsearchClient;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.xcontent.ToXContentObject;
-import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.xcontent.ToXContentObject;
+import org.elasticsearch.xcontent.XContentBuilder;
+import org.elasticsearch.xcontent.XContentParser;
+import org.elasticsearch.xpack.core.common.validation.SourceDestValidator;
 import org.elasticsearch.xpack.core.ml.dataframe.DataFrameAnalyticsConfig;
+import org.elasticsearch.xpack.core.ml.dataframe.DataFrameAnalyticsSource;
 import org.elasticsearch.xpack.core.ml.job.messages.Messages;
+import org.elasticsearch.xpack.core.ml.utils.MlStrings;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -29,7 +32,7 @@ public class PutDataFrameAnalyticsAction extends ActionType<PutDataFrameAnalytic
     public static final String NAME = "cluster:admin/xpack/ml/data_frame/analytics/put";
 
     private PutDataFrameAnalyticsAction() {
-        super(NAME, Response::new);
+        super(NAME);
     }
 
     public static class Request extends AcknowledgedRequest<Request> implements ToXContentObject {
@@ -41,29 +44,17 @@ public class PutDataFrameAnalyticsAction extends ActionType<PutDataFrameAnalytic
             DataFrameAnalyticsConfig.Builder config = DataFrameAnalyticsConfig.STRICT_PARSER.apply(parser, null);
             if (config.getId() == null) {
                 config.setId(id);
-            } else if (!Strings.isNullOrEmpty(id) && !id.equals(config.getId())) {
+            } else if (Strings.isNullOrEmpty(id) == false && id.equals(config.getId()) == false) {
                 // If we have both URI and body ID, they must be identical
-                throw new IllegalArgumentException(Messages.getMessage(Messages.INCONSISTENT_ID, DataFrameAnalyticsConfig.ID,
-                    config.getId(), id));
+                throw new IllegalArgumentException(
+                    Messages.getMessage(Messages.INCONSISTENT_ID, DataFrameAnalyticsConfig.ID, config.getId(), id)
+                );
             }
 
             return new PutDataFrameAnalyticsAction.Request(config.build());
         }
 
-        /**
-         * Parses request for memory estimation.
-         * {@link Request} is reused across {@link PutDataFrameAnalyticsAction} and {@link EstimateMemoryUsageAction} but parsing differs
-         * between these two usages.
-         */
-        public static Request parseRequestForMemoryEstimation(XContentParser parser) {
-            DataFrameAnalyticsConfig.Builder configBuilder = DataFrameAnalyticsConfig.STRICT_PARSER.apply(parser, null);
-            DataFrameAnalyticsConfig config = configBuilder.buildForMemoryEstimation();
-            return new PutDataFrameAnalyticsAction.Request(config);
-        }
-
-        private DataFrameAnalyticsConfig config;
-
-        public Request() {}
+        private final DataFrameAnalyticsConfig config;
 
         public Request(StreamInput in) throws IOException {
             super(in);
@@ -71,6 +62,7 @@ public class PutDataFrameAnalyticsAction extends ActionType<PutDataFrameAnalytic
         }
 
         public Request(DataFrameAnalyticsConfig config) {
+            super(TRAPPY_IMPLICIT_DEFAULT_MASTER_NODE_TIMEOUT, DEFAULT_ACK_TIMEOUT);
             this.config = config;
         }
 
@@ -86,7 +78,61 @@ public class PutDataFrameAnalyticsAction extends ActionType<PutDataFrameAnalytic
 
         @Override
         public ActionRequestValidationException validate() {
-            return null;
+            ActionRequestValidationException error = null;
+            error = checkConfigIdIsValid(config, error);
+            error = SourceDestValidator.validateRequest(error, config.getDest().getIndex());
+            error = checkNoIncludedAnalyzedFieldsAreExcludedBySourceFiltering(config, error);
+            return error;
+        }
+
+        private static ActionRequestValidationException checkConfigIdIsValid(
+            DataFrameAnalyticsConfig analyticsConfig,
+            ActionRequestValidationException error
+        ) {
+            if (MlStrings.isValidId(analyticsConfig.getId()) == false) {
+                error = ValidateActions.addValidationError(
+                    Messages.getMessage(Messages.INVALID_ID, DataFrameAnalyticsConfig.ID, analyticsConfig.getId()),
+                    error
+                );
+            }
+            if (MlStrings.hasValidLengthForId(analyticsConfig.getId()) == false) {
+                error = ValidateActions.addValidationError(
+                    Messages.getMessage(
+                        Messages.ID_TOO_LONG,
+                        DataFrameAnalyticsConfig.ID,
+                        analyticsConfig.getId(),
+                        MlStrings.ID_LENGTH_LIMIT
+                    ),
+                    error
+                );
+            }
+            return error;
+        }
+
+        private static ActionRequestValidationException checkNoIncludedAnalyzedFieldsAreExcludedBySourceFiltering(
+            DataFrameAnalyticsConfig analyticsConfig,
+            ActionRequestValidationException error
+        ) {
+            if (analyticsConfig.getAnalyzedFields() == null) {
+                return error;
+            }
+            for (String analyzedInclude : analyticsConfig.getAnalyzedFields().includes()) {
+                if (analyticsConfig.getSource().isFieldExcluded(analyzedInclude)) {
+                    return ValidateActions.addValidationError(
+                        "field ["
+                            + analyzedInclude
+                            + "] is included in ["
+                            + DataFrameAnalyticsConfig.ANALYZED_FIELDS.getPreferredName()
+                            + "] but not in ["
+                            + DataFrameAnalyticsConfig.SOURCE.getPreferredName()
+                            + "."
+                            + DataFrameAnalyticsSource._SOURCE.getPreferredName()
+                            + "]",
+                        error
+                    );
+                }
+            }
+            return error;
         }
 
         @Override
@@ -111,15 +157,13 @@ public class PutDataFrameAnalyticsAction extends ActionType<PutDataFrameAnalytic
 
     public static class Response extends ActionResponse implements ToXContentObject {
 
-        private DataFrameAnalyticsConfig config;
+        private final DataFrameAnalyticsConfig config;
 
         public Response(DataFrameAnalyticsConfig config) {
             this.config = config;
         }
 
-        Response() {}
-
-        Response(StreamInput in) throws IOException {
+        public Response(StreamInput in) throws IOException {
             super(in);
             config = new DataFrameAnalyticsConfig(in);
         }
@@ -148,12 +192,4 @@ public class PutDataFrameAnalyticsAction extends ActionType<PutDataFrameAnalytic
             return Objects.hash(config);
         }
     }
-
-    public static class RequestBuilder extends MasterNodeOperationRequestBuilder<Request, Response, RequestBuilder> {
-
-        protected RequestBuilder(ElasticsearchClient client, PutDataFrameAnalyticsAction action) {
-            super(client, action, new Request());
-        }
-    }
-
 }

@@ -1,16 +1,16 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.sql.expression.predicate.conditional;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.xpack.sql.expression.gen.processor.Processor;
+import org.elasticsearch.xpack.ql.expression.gen.processor.Processor;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -25,7 +25,7 @@ public class CaseProcessor implements Processor {
     }
 
     public CaseProcessor(StreamInput in) throws IOException {
-        processors = in.readNamedWriteableList(Processor.class);
+        processors = in.readNamedWriteableCollectionAsList(Processor.class);
     }
 
     @Override
@@ -35,26 +35,20 @@ public class CaseProcessor implements Processor {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeNamedWriteableList(processors);
+        out.writeNamedWriteableCollection(processors);
     }
 
     @Override
     public Object process(Object input) {
-        List<Object> objects = new ArrayList<>(processors.size());
-        for (Processor processor : processors) {
-            objects.add(processor.process(input));
-        }
-        return apply(objects);
-    }
-
-    public static Object apply(List<Object> objects) {
-        for (int i = 0; i < objects.size() - 2; i += 2) {
-            if (objects.get(i) == Boolean.TRUE) {
-                return objects.get(i + 1);
+        // Check every condition in sequence and if it evaluates to TRUE,
+        // evaluate and return the result associated with that condition.
+        for (int i = 0; i < processors.size() - 2; i += 2) {
+            if (processors.get(i).process(input) == Boolean.TRUE) {
+                return processors.get(i + 1).process(input);
             }
         }
         // resort to default value
-        return objects.get(objects.size() - 1);
+        return processors.get(processors.size() - 1).process(input);
     }
 
     @Override

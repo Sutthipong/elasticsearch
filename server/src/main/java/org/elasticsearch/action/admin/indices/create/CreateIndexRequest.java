@@ -1,26 +1,16 @@
 /*
- * Licensed to Elasticsearch under one or more contributor
- * license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright
- * ownership. Elasticsearch licenses this file to you under
- * the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0 and the Server Side Public License, v 1; you may not use this file except
+ * in compliance with, at your election, the Elastic License 2.0 or the Server
+ * Side Public License, v 1.
  */
 
 package org.elasticsearch.action.admin.indices.create;
 
 import org.elasticsearch.ElasticsearchGenerationException;
 import org.elasticsearch.ElasticsearchParseException;
+import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.IndicesRequest;
 import org.elasticsearch.action.admin.indices.alias.Alias;
@@ -28,47 +18,41 @@ import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
 import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.action.support.master.AcknowledgedRequest;
-import org.elasticsearch.common.ParseField;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
-import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.xcontent.DeprecationHandler;
 import org.elasticsearch.common.xcontent.LoggingDeprecationHandler;
-import org.elasticsearch.common.xcontent.NamedXContentRegistry;
-import org.elasticsearch.common.xcontent.ToXContentObject;
-import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentHelper;
-import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.xcontent.DeprecationHandler;
+import org.elasticsearch.xcontent.NamedXContentRegistry;
+import org.elasticsearch.xcontent.ParseField;
+import org.elasticsearch.xcontent.XContentBuilder;
+import org.elasticsearch.xcontent.XContentFactory;
+import org.elasticsearch.xcontent.XContentParser;
+import org.elasticsearch.xcontent.XContentType;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
 import static org.elasticsearch.action.ValidateActions.addValidationError;
-import static org.elasticsearch.common.settings.Settings.Builder.EMPTY_SETTINGS;
 import static org.elasticsearch.common.settings.Settings.readSettingsFromStream;
-import static org.elasticsearch.common.settings.Settings.writeSettingsToStream;
 
 /**
- * A request to create an index. Best created with {@link org.elasticsearch.client.Requests#createIndexRequest(String)}.
+ * A request to create an index.
  * <p>
  * The index created can optionally be created with {@link #settings(org.elasticsearch.common.settings.Settings)}.
  *
- * @see org.elasticsearch.client.IndicesAdminClient#create(CreateIndexRequest)
- * @see org.elasticsearch.client.Requests#createIndexRequest(String)
+ * @see org.elasticsearch.client.internal.IndicesAdminClient#create(CreateIndexRequest)
  * @see CreateIndexResponse
  */
-public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> implements IndicesRequest, ToXContentObject {
+public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> implements IndicesRequest {
 
     public static final ParseField MAPPINGS = new ParseField("mappings");
     public static final ParseField SETTINGS = new ParseField("settings");
@@ -78,46 +62,76 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
 
     private String index;
 
-    private Settings settings = EMPTY_SETTINGS;
+    private boolean requireDataStream;
 
-    private final Map<String, String> mappings = new HashMap<>();
+    private Settings settings = Settings.EMPTY;
+
+    private String mappings = "{}";
 
     private final Set<Alias> aliases = new HashSet<>();
 
     private ActiveShardCount waitForActiveShards = ActiveShardCount.DEFAULT;
 
+    private String origin = "";
+
+    /**
+     * Constructs a new request by deserializing an input
+     * @param in the input from which to deserialize
+     */
     public CreateIndexRequest(StreamInput in) throws IOException {
         super(in);
         cause = in.readString();
         index = in.readString();
         settings = readSettingsFromStream(in);
-        int size = in.readVInt();
-        for (int i = 0; i < size; i++) {
-            final String type = in.readString();
-            String source = in.readString();
-            mappings.put(type, source);
+        if (in.getTransportVersion().before(TransportVersions.V_8_0_0)) {
+            int size = in.readVInt();
+            assert size <= 1 : "Expected to read 0 or 1 mappings, but received " + size;
+            if (size == 1) {
+                String type = in.readString();
+                if (MapperService.SINGLE_MAPPING_NAME.equals(type) == false) {
+                    throw new IllegalArgumentException("Expected to receive mapping type of [_doc] but got [" + type + "]");
+                }
+                mappings = in.readString();
+            }
+        } else {
+            mappings = in.readString();
         }
         int aliasesSize = in.readVInt();
         for (int i = 0; i < aliasesSize; i++) {
             aliases.add(new Alias(in));
         }
         waitForActiveShards = ActiveShardCount.readFrom(in);
+        if (in.getTransportVersion().onOrAfter(TransportVersions.V_7_12_0)) {
+            origin = in.readString();
+        }
+        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
+            requireDataStream = in.readBoolean();
+        } else {
+            requireDataStream = false;
+        }
     }
 
     public CreateIndexRequest() {
+        super(TRAPPY_IMPLICIT_DEFAULT_MASTER_NODE_TIMEOUT, DEFAULT_ACK_TIMEOUT);
     }
 
     /**
-     * Constructs a new request to create an index with the specified name.
+     * Constructs a request to create an index.
+     *
+     * @param index the name of the index
      */
     public CreateIndexRequest(String index) {
-        this(index, EMPTY_SETTINGS);
+        this(index, Settings.EMPTY);
     }
 
     /**
-     * Constructs a new request to create an index with the specified name and settings.
+     * Constructs a request to create an index.
+     *
+     * @param index the name of the index
+     * @param settings the settings to apply to the index
      */
     public CreateIndexRequest(String index, Settings settings) {
+        super(TRAPPY_IMPLICIT_DEFAULT_MASTER_NODE_TIMEOUT, DEFAULT_ACK_TIMEOUT);
         this.index = index;
         this.settings = settings;
     }
@@ -133,7 +147,7 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
 
     @Override
     public String[] indices() {
-        return new String[]{index};
+        return new String[] { index };
     }
 
     @Override
@@ -165,6 +179,15 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
      */
     public String cause() {
         return cause;
+    }
+
+    public String origin() {
+        return origin;
+    }
+
+    public CreateIndexRequest origin(String origin) {
+        this.origin = Objects.requireNonNull(origin);
+        return this;
     }
 
     /**
@@ -203,38 +226,71 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
      * The settings to create the index with (either json/yaml/properties format)
      */
     public CreateIndexRequest settings(Map<String, ?> source) {
-        try {
-            XContentBuilder builder = XContentFactory.contentBuilder(XContentType.JSON);
-            builder.map(source);
-            settings(Strings.toString(builder), XContentType.JSON);
-        } catch (IOException e) {
-            throw new ElasticsearchGenerationException("Failed to generate [" + source + "]", e);
-        }
+        this.settings = Settings.builder().loadFromMap(source).build();
         return this;
     }
 
     /**
-     * Adds mapping that will be added when the index gets created.
+     * Set the mapping for this index
      *
-     * @param type   The mapping type
-     * @param source The mapping source
-     * @param xContentType The content type of the source
+     * The mapping should be in the form of a JSON string, with an outer _doc key
+     * <pre>
+     *     .mapping("{\"_doc\":{\"properties\": ... }}")
+     * </pre>
      */
-    public CreateIndexRequest mapping(String type, String source, XContentType xContentType) {
-        return mapping(type, new BytesArray(source), xContentType);
+    public CreateIndexRequest mapping(String mapping) {
+        this.mappings = mapping;
+        return this;
     }
 
     /**
-     * Adds mapping that will be added when the index gets created.
+     * Set the mapping for this index
      *
-     * @param type   The mapping type
      * @param source The mapping source
-     * @param xContentType the content type of the mapping source
      */
-    private CreateIndexRequest mapping(String type, BytesReference source, XContentType xContentType) {
+    public CreateIndexRequest mapping(XContentBuilder source) {
+        return mapping(BytesReference.bytes(source), source.contentType());
+    }
+
+    /**
+     * Set the mapping for this index
+     *
+     * @param source The mapping source
+     */
+    public CreateIndexRequest mapping(Map<String, ?> source) {
+        return mapping(MapperService.SINGLE_MAPPING_NAME, source);
+    }
+
+    /**
+     * A specialized simplified mapping source method, takes the form of simple properties definition:
+     * ("field1", "type=string,store=true").
+     */
+    public CreateIndexRequest simpleMapping(String... source) {
+        mapping(PutMappingRequest.simpleMapping(source));
+        return this;
+    }
+
+    private CreateIndexRequest mapping(BytesReference source, XContentType xContentType) {
         Objects.requireNonNull(xContentType);
         Map<String, Object> mappingAsMap = XContentHelper.convertToMap(source, false, xContentType).v2();
-        return mapping(type, mappingAsMap);
+        return mapping(MapperService.SINGLE_MAPPING_NAME, mappingAsMap);
+    }
+
+    private CreateIndexRequest mapping(String type, Map<String, ?> source) {
+        // wrap it in a type map if its not
+        if (source.size() != 1 || source.containsKey(type) == false) {
+            source = Map.of(MapperService.SINGLE_MAPPING_NAME, source);
+        } else if (MapperService.SINGLE_MAPPING_NAME.equals(type) == false) {
+            // if it has a different type name, then unwrap and rewrap with _doc
+            source = Map.of(MapperService.SINGLE_MAPPING_NAME, source.get(type));
+        }
+        try {
+            XContentBuilder builder = XContentFactory.jsonBuilder();
+            builder.map(source);
+            return mapping(Strings.toString(builder));
+        } catch (IOException e) {
+            throw new ElasticsearchGenerationException("Failed to generate [" + source + "]", e);
+        }
     }
 
     /**
@@ -242,49 +298,6 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
      */
     public CreateIndexRequest cause(String cause) {
         this.cause = cause;
-        return this;
-    }
-
-    /**
-     * Adds mapping that will be added when the index gets created.
-     *
-     * @param type   The mapping type
-     * @param source The mapping source
-     */
-    public CreateIndexRequest mapping(String type, XContentBuilder source) {
-        return mapping(type, BytesReference.bytes(source), source.contentType());
-    }
-
-    /**
-     * Adds mapping that will be added when the index gets created.
-     *
-     * @param type   The mapping type
-     * @param source The mapping source
-     */
-    public CreateIndexRequest mapping(String type, Map<String, ?> source) {
-        if (mappings.containsKey(type)) {
-            throw new IllegalStateException("mappings for type \"" + type + "\" were already defined");
-        }
-        // wrap it in a type map if its not
-        if (source.size() != 1 || !source.containsKey(type)) {
-            source = MapBuilder.<String, Object>newMapBuilder().put(type, source).map();
-        }
-        try {
-            XContentBuilder builder = XContentFactory.jsonBuilder();
-            builder.map(source);
-            mappings.put(type, Strings.toString(builder));
-            return this;
-        } catch (IOException e) {
-            throw new ElasticsearchGenerationException("Failed to generate [" + source + "]", e);
-        }
-    }
-
-    /**
-     * A specialized simplified mapping source method, takes the form of simple properties definition:
-     * ("field1", "type=string,store=true").
-     */
-    public CreateIndexRequest mapping(String type, Object... source) {
-        mapping(type, PutMappingRequest.buildFromSimplifiedDef(type, source));
         return this;
     }
 
@@ -320,15 +333,14 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
      */
     public CreateIndexRequest aliases(BytesReference source) {
         // EMPTY is safe here because we never call namedObject
-        try (XContentParser parser = XContentHelper
-                .createParser(NamedXContentRegistry.EMPTY, LoggingDeprecationHandler.INSTANCE, source)) {
-            //move to the first alias
+        try (XContentParser parser = XContentHelper.createParser(NamedXContentRegistry.EMPTY, LoggingDeprecationHandler.INSTANCE, source)) {
+            // move to the first alias
             parser.nextToken();
             while ((parser.nextToken()) != XContentParser.Token.END_OBJECT) {
                 alias(Alias.fromXContent(parser));
             }
             return this;
-        } catch(IOException e) {
+        } catch (IOException e) {
             throw new ElasticsearchParseException("Failed to parse aliases", e);
         }
     }
@@ -404,7 +416,7 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
         return this;
     }
 
-    public Map<String, String> mappings() {
+    public String mappings() {
         return this.mappings;
     }
 
@@ -444,50 +456,61 @@ public class CreateIndexRequest extends AcknowledgedRequest<CreateIndexRequest> 
         return waitForActiveShards(ActiveShardCount.from(waitForActiveShards));
     }
 
+    public boolean isRequireDataStream() {
+        return requireDataStream;
+    }
+
+    /**
+     * Set whether this CreateIndexRequest requires a data stream. The data stream may be pre-existing or to-be-created.
+     */
+    public CreateIndexRequest requireDataStream(boolean requireDataStream) {
+        this.requireDataStream = requireDataStream;
+        return this;
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
         out.writeString(cause);
         out.writeString(index);
-        writeSettingsToStream(settings, out);
-        out.writeVInt(mappings.size());
-        for (Map.Entry<String, String> entry : mappings.entrySet()) {
-            out.writeString(entry.getKey());
-            out.writeString(entry.getValue());
+        settings.writeTo(out);
+        if (out.getTransportVersion().before(TransportVersions.V_8_0_0)) {
+            if ("{}".equals(mappings)) {
+                out.writeVInt(0);
+            } else {
+                out.writeVInt(1);
+                out.writeString(MapperService.SINGLE_MAPPING_NAME);
+                out.writeString(mappings);
+            }
+        } else {
+            out.writeString(mappings);
         }
-        out.writeVInt(aliases.size());
-        for (Alias alias : aliases) {
-            alias.writeTo(out);
-        }
+        out.writeCollection(aliases);
         waitForActiveShards.writeTo(out);
+        if (out.getTransportVersion().onOrAfter(TransportVersions.V_7_12_0)) {
+            out.writeString(origin);
+        }
+        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
+            out.writeOptionalBoolean(this.requireDataStream);
+        }
     }
 
     @Override
-    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject();
-        innerToXContent(builder, params);
-        builder.endObject();
-        return builder;
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        CreateIndexRequest that = (CreateIndexRequest) obj;
+        return Objects.equals(cause, that.cause)
+            && Objects.equals(index, that.index)
+            && Objects.equals(settings, that.settings)
+            && Objects.equals(mappings, that.mappings)
+            && Objects.equals(aliases, that.aliases)
+            && Objects.equals(waitForActiveShards, that.waitForActiveShards)
+            && Objects.equals(origin, that.origin);
     }
 
-    public XContentBuilder innerToXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject(SETTINGS.getPreferredName());
-        settings.toXContent(builder, params);
-        builder.endObject();
-
-        builder.startObject(MAPPINGS.getPreferredName());
-        for (Map.Entry<String, String> entry : mappings.entrySet()) {
-            try (InputStream stream = new BytesArray(entry.getValue()).streamInput()) {
-                builder.rawField(entry.getKey(), stream, XContentType.JSON);
-            }
-        }
-        builder.endObject();
-
-        builder.startObject(ALIASES.getPreferredName());
-        for (Alias alias : aliases) {
-            alias.toXContent(builder, params);
-        }
-        builder.endObject();
-        return builder;
+    @Override
+    public int hashCode() {
+        return Objects.hash(cause, index, settings, mappings, aliases, waitForActiveShards, origin);
     }
 }

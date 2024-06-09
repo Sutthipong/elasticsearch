@@ -1,22 +1,25 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.sql.plan.logical;
 
-import org.elasticsearch.xpack.sql.expression.Attribute;
-import org.elasticsearch.xpack.sql.expression.Expression;
-import org.elasticsearch.xpack.sql.expression.Nullability;
-import org.elasticsearch.xpack.sql.tree.NodeInfo;
-import org.elasticsearch.xpack.sql.tree.Source;
-import org.elasticsearch.xpack.sql.type.DataType;
+import org.elasticsearch.xpack.ql.expression.Attribute;
+import org.elasticsearch.xpack.ql.expression.Expression;
+import org.elasticsearch.xpack.ql.expression.Nullability;
+import org.elasticsearch.xpack.ql.plan.logical.BinaryPlan;
+import org.elasticsearch.xpack.ql.plan.logical.LogicalPlan;
+import org.elasticsearch.xpack.ql.tree.NodeInfo;
+import org.elasticsearch.xpack.ql.tree.Source;
+import org.elasticsearch.xpack.ql.type.DataTypes;
 
 import java.util.List;
 import java.util.Objects;
 
 import static java.util.stream.Collectors.toList;
-import static org.elasticsearch.xpack.sql.util.CollectionUtils.combine;
+import static org.elasticsearch.xpack.ql.util.CollectionUtils.combine;
 
 public class Join extends BinaryPlan {
 
@@ -44,9 +47,6 @@ public class Join extends BinaryPlan {
 
     @Override
     public LogicalPlan replaceChildren(List<LogicalPlan> newChildren) {
-        if (newChildren.size() != 2) {
-            throw new IllegalArgumentException("expected [2] children but received [" + newChildren.size() + "]");
-        }
         return new Join(source(), newChildren.get(0), newChildren.get(1), type, condition);
     }
 
@@ -60,26 +60,23 @@ public class Join extends BinaryPlan {
 
     @Override
     public List<Attribute> output() {
-        switch (type) {
-            case LEFT:
+        return switch (type) {
+            case LEFT ->
                 // right side can be null
-                return combine(left().output(), makeNullable(right().output()));
-            case RIGHT:
+                combine(left().output(), makeNullable(right().output()));
+            case RIGHT ->
                 // left side can be null
-                return combine(makeNullable(left().output()), right().output());
-            case FULL:
+                combine(makeNullable(left().output()), right().output());
+            case FULL ->
                 // both sides can be null
-                return combine(makeNullable(left().output()), makeNullable(right().output()));
+                combine(makeNullable(left().output()), makeNullable(right().output()));
             // INNER
-            default:
-                return combine(left().output(), right().output());
-        }
+            default -> combine(left().output(), right().output());
+        };
     }
 
     private static List<Attribute> makeNullable(List<Attribute> output) {
-        return output.stream()
-                .map(a -> a.withNullability(Nullability.TRUE))
-                .collect(toList());
+        return output.stream().map(a -> a.withNullability(Nullability.TRUE)).collect(toList());
     }
 
     @Override
@@ -97,10 +94,10 @@ public class Join extends BinaryPlan {
         // - the children are resolved
         // - there are no conflicts in output
         // - the condition (if present) is resolved to a boolean
-        return childrenResolved() &&
-                duplicatesResolved() &&
-                expressionsResolved() &&
-                (condition == null || DataType.BOOLEAN == condition.dataType());
+        return childrenResolved()
+            && duplicatesResolved()
+            && expressionsResolved()
+            && (condition == null || DataTypes.BOOLEAN == condition.dataType());
     }
 
     @Override
@@ -120,8 +117,8 @@ public class Join extends BinaryPlan {
         Join other = (Join) obj;
 
         return Objects.equals(type, other.type)
-                && Objects.equals(condition, other.condition)
-                && Objects.equals(left(), other.left())
-                && Objects.equals(right(), other.right());
+            && Objects.equals(condition, other.condition)
+            && Objects.equals(left(), other.left())
+            && Objects.equals(right(), other.right());
     }
 }

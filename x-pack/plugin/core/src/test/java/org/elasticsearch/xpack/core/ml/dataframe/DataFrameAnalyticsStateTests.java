@@ -1,7 +1,8 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.core.ml.dataframe;
 
@@ -13,6 +14,7 @@ import static org.hamcrest.Matchers.is;
 public class DataFrameAnalyticsStateTests extends ESTestCase {
 
     public void testFromString() {
+        assertThat(DataFrameAnalyticsState.fromString("starting"), equalTo(DataFrameAnalyticsState.STARTING));
         assertThat(DataFrameAnalyticsState.fromString("started"), equalTo(DataFrameAnalyticsState.STARTED));
         assertThat(DataFrameAnalyticsState.fromString("reindexing"), equalTo(DataFrameAnalyticsState.REINDEXING));
         assertThat(DataFrameAnalyticsState.fromString("analyzing"), equalTo(DataFrameAnalyticsState.ANALYZING));
@@ -22,6 +24,7 @@ public class DataFrameAnalyticsStateTests extends ESTestCase {
     }
 
     public void testToString() {
+        assertThat(DataFrameAnalyticsState.STARTING.toString(), equalTo("starting"));
         assertThat(DataFrameAnalyticsState.STARTED.toString(), equalTo("started"));
         assertThat(DataFrameAnalyticsState.REINDEXING.toString(), equalTo("reindexing"));
         assertThat(DataFrameAnalyticsState.ANALYZING.toString(), equalTo("analyzing"));

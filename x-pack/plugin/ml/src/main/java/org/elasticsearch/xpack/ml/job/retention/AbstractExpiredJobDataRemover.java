@@ -1,28 +1,18 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 package org.elasticsearch.xpack.ml.job.retention;
 
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.client.Client;
-import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.index.query.BoolQueryBuilder;
-import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.client.internal.OriginSettingClient;
+import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.xpack.core.ml.job.config.Job;
-import org.elasticsearch.xpack.core.ml.job.persistence.AnomalyDetectorsIndex;
-import org.elasticsearch.xpack.core.ml.job.results.Result;
-import org.elasticsearch.xpack.ml.job.persistence.BatchedJobsIterator;
-import org.elasticsearch.xpack.ml.utils.VolatileCursorIterator;
 
-import java.time.Clock;
-import java.time.Instant;
-import java.util.Deque;
 import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
+import java.util.function.BooleanSupplier;
 
 /**
  * Removes job data that expired with respect to their retention period.
@@ -33,18 +23,31 @@ import java.util.stream.Collectors;
  */
 abstract class AbstractExpiredJobDataRemover implements MlDataRemover {
 
-    private final Client client;
+    protected final OriginSettingClient client;
+    private final Iterator<Job> jobIterator;
+    private final TaskId parentTaskId;
 
-    AbstractExpiredJobDataRemover(Client client) {
+    AbstractExpiredJobDataRemover(OriginSettingClient client, Iterator<Job> jobIterator, TaskId parentTaskId) {
         this.client = client;
+        this.jobIterator = jobIterator;
+        this.parentTaskId = parentTaskId;
+    }
+
+    protected TaskId getParentTaskId() {
+        return parentTaskId;
     }
 
     @Override
-    public void remove(ActionListener<Boolean> listener) {
-        removeData(newJobIterator(), listener);
+    public void remove(float requestsPerSecond, ActionListener<Boolean> listener, BooleanSupplier isTimedOutSupplier) {
+        removeData(jobIterator, requestsPerSecond, listener, isTimedOutSupplier);
     }
 
-    private void removeData(WrappedBatchedJobsIterator jobIterator, ActionListener<Boolean> listener) {
+    private void removeData(
+        Iterator<Job> jobIterator,
+        float requestsPerSecond,
+        ActionListener<Boolean> listener,
+        BooleanSupplier isTimedOutSupplier
+    ) {
         if (jobIterator.hasNext() == false) {
             listener.onResponse(true);
             return;
@@ -56,81 +59,53 @@ abstract class AbstractExpiredJobDataRemover implements MlDataRemover {
             return;
         }
 
-        Long retentionDays = getRetentionDays(job);
-        if (retentionDays == null) {
-            removeData(jobIterator, listener);
+        if (isTimedOutSupplier.getAsBoolean()) {
+            listener.onResponse(false);
             return;
         }
-        long cutoffEpochMs = calcCutoffEpochMs(retentionDays);
-        removeDataBefore(job, cutoffEpochMs, ActionListener.wrap(response -> removeData(jobIterator, listener), listener::onFailure));
+
+        Long retentionDays = getRetentionDays(job);
+        if (retentionDays == null) {
+            removeData(jobIterator, requestsPerSecond, listener, isTimedOutSupplier);
+            return;
+        }
+
+        calcCutoffEpochMs(job.getId(), retentionDays, listener.delegateFailureAndWrap((delegate, response) -> {
+            if (response == null) {
+                removeData(jobIterator, requestsPerSecond, delegate, isTimedOutSupplier);
+            } else {
+                removeDataBefore(
+                    job,
+                    requestsPerSecond,
+                    response.latestTimeMs,
+                    response.cutoffEpochMs,
+                    delegate.delegateFailureAndWrap((l, r) -> removeData(jobIterator, requestsPerSecond, l, isTimedOutSupplier))
+                );
+            }
+        }));
     }
 
-    private WrappedBatchedJobsIterator newJobIterator() {
-        BatchedJobsIterator jobsIterator = new BatchedJobsIterator(client, AnomalyDetectorsIndex.configIndexName());
-        return new WrappedBatchedJobsIterator(jobsIterator);
-    }
+    abstract void calcCutoffEpochMs(String jobId, long retentionDays, ActionListener<CutoffDetails> listener);
 
-    private long calcCutoffEpochMs(long retentionDays) {
-        long nowEpochMs = Instant.now(Clock.systemDefaultZone()).toEpochMilli();
-        return nowEpochMs - new TimeValue(retentionDays, TimeUnit.DAYS).getMillis();
-    }
-
-    protected abstract Long getRetentionDays(Job job);
+    abstract Long getRetentionDays(Job job);
 
     /**
      * Template method to allow implementation details of various types of data (e.g. results, model snapshots).
      * Implementors need to call {@code listener.onResponse} when they are done in order to continue to the next job.
      */
-    protected abstract void removeDataBefore(Job job, long cutoffEpochMs, ActionListener<Boolean> listener);
-
-    protected static BoolQueryBuilder createQuery(String jobId, long cutoffEpochMs) {
-        return QueryBuilders.boolQuery()
-                .filter(QueryBuilders.termQuery(Job.ID.getPreferredName(), jobId))
-                .filter(QueryBuilders.rangeQuery(Result.TIMESTAMP.getPreferredName()).lt(cutoffEpochMs).format("epoch_millis"));
-    }
+    abstract void removeDataBefore(
+        Job job,
+        float requestsPerSecond,
+        long latestTimeMs,
+        long cutoffEpochMs,
+        ActionListener<Boolean> listener
+    );
 
     /**
-     * BatchedJobsIterator efficiently returns batches of jobs using a scroll
-     * search but AbstractExpiredJobDataRemover works with one job at a time.
-     * This class abstracts away the logic of pulling one job at a time from
-     * multiple batches.
+     * The latest time that cutoffs are measured from is not wall clock time,
+     * but some other reference point that makes sense for the type of data
+     * being removed.  This class groups the cutoff time with it's "latest"
+     * reference point.
      */
-    private class WrappedBatchedJobsIterator implements Iterator<Job> {
-        private final BatchedJobsIterator batchedIterator;
-        private VolatileCursorIterator<Job> currentBatch;
-
-        WrappedBatchedJobsIterator(BatchedJobsIterator batchedIterator) {
-            this.batchedIterator = batchedIterator;
-        }
-
-        @Override
-        public boolean hasNext() {
-            return (currentBatch != null && currentBatch.hasNext()) || batchedIterator.hasNext();
-        }
-
-        /**
-         * Before BatchedJobsIterator has run a search it reports hasNext == true
-         * but the first search may return no results. In that case null is return
-         * and clients have to handle null.
-         */
-        @Override
-        public Job next() {
-            if (currentBatch != null && currentBatch.hasNext()) {
-                return currentBatch.next();
-            }
-
-            // currentBatch is either null or all its elements have been iterated.
-            // get the next currentBatch
-            currentBatch = createBatchIteratorFromBatch(batchedIterator.next());
-
-            // BatchedJobsIterator.hasNext maybe true if searching the first time
-            // but no results are returned.
-            return currentBatch.hasNext() ? currentBatch.next() : null;
-        }
-
-        private VolatileCursorIterator<Job> createBatchIteratorFromBatch(Deque<Job.Builder> builders) {
-            List<Job> jobs = builders.stream().map(Job.Builder::build).collect(Collectors.toList());
-            return new VolatileCursorIterator<>(jobs);
-        }
-    }
+    protected record CutoffDetails(long latestTimeMs, long cutoffEpochMs) {}
 }

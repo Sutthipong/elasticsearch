@@ -1,29 +1,21 @@
 /*
- * Licensed to Elasticsearch under one or more contributor
- * license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright
- * ownership. Elasticsearch licenses this file to you under
- * the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0 and the Server Side Public License, v 1; you may not use this file except
+ * in compliance with, at your election, the Elastic License 2.0 or the Server
+ * Side Public License, v 1.
  */
-
 package org.elasticsearch.common.logging;
 
-import com.fasterxml.jackson.core.io.JsonStringEncoder;
+import org.apache.logging.log4j.message.MapMessage;
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.elasticsearch.common.SuppressLoggerChecks;
+import org.apache.logging.log4j.util.Chars;
+import org.apache.logging.log4j.util.StringBuilders;
 
-import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -31,45 +23,87 @@ import java.util.stream.Stream;
 /**
  * A base class for custom log4j logger messages. Carries additional fields which will populate JSON fields in logs.
  */
-public abstract class ESLogMessage extends ParameterizedMessage {
-    private static final JsonStringEncoder JSON_STRING_ENCODER = JsonStringEncoder.getInstance();
-    private final Map<String, Object> fields;
+public class ESLogMessage extends MapMessage<ESLogMessage, Object> {
+    private final List<Object> arguments = new ArrayList<>();
+    private String messagePattern;
+
+    @SuppressWarnings("this-escape")
+    public ESLogMessage(String messagePattern, Object... args) {
+        super(new LinkedHashMap<>());
+        Collections.addAll(this.arguments, args);
+        this.messagePattern = messagePattern;
+
+        Object message = new Object() {
+            @Override
+            public String toString() {
+                return ParameterizedMessage.format(messagePattern, arguments.toArray());
+            }
+        };
+        with("message", message);
+    }
+
+    public ESLogMessage() {
+        super(new LinkedHashMap<>());
+    }
+
+    public ESLogMessage argAndField(String key, Object value) {
+        this.arguments.add(value);
+        super.with(key, value);
+        return this;
+    }
+
+    public ESLogMessage field(String key, Object value) {
+        super.with(key, value);
+        return this;
+    }
+
+    public ESLogMessage withFields(Map<String, Object> prepareMap) {
+        prepareMap.forEach(this::field);
+        return this;
+    }
 
     /**
-     * This is an abstract class, so this is safe. The check is done on DeprecationMessage.
-     * Other subclasses are not allowing varargs
+     * This method is used in order to support ESJsonLayout which replaces %CustomMapFields from a pattern with JSON fields
+     * It is a modified version of {@link MapMessage#asJson(StringBuilder)} where the curly brackets are not added
+     * @param sb a string builder where JSON fields will be attached
      */
-    @SuppressLoggerChecks(reason = "Safe as this is abstract class")
-    public ESLogMessage(Map<String, Object> fields, String messagePattern, Object... args) {
-        super(messagePattern, args);
-        this.fields = fields;
-    }
-
-    public static String escapeJson(String text) {
-        byte[] sourceEscaped = JSON_STRING_ENCODER.quoteAsUTF8(text);
-        return new String(sourceEscaped, Charset.defaultCharset());
-    }
-
-    public String getValueFor(String key) {
-        Object value = fields.get(key);
-        return value!=null ? value.toString() : null;
+    protected void addJsonNoBrackets(StringBuilder sb) {
+        for (int i = 0; i < getIndexedReadOnlyStringMap().size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(Chars.DQUOTE);
+            int start = sb.length();
+            sb.append(getIndexedReadOnlyStringMap().getKeyAt(i));
+            StringBuilders.escapeJson(sb, start);
+            sb.append(Chars.DQUOTE).append(':').append(Chars.DQUOTE);
+            start = sb.length();
+            Object value = getIndexedReadOnlyStringMap().getValueAt(i);
+            sb.append(value);
+            StringBuilders.escapeJson(sb, start);
+            sb.append(Chars.DQUOTE);
+        }
     }
 
     public static String inQuotes(String s) {
-        if(s == null)
-            return inQuotes("");
+        if (s == null) return inQuotes("");
         return "\"" + s + "\"";
     }
 
     public static String inQuotes(Object s) {
-        if(s == null)
-            return inQuotes("");
+        if (s == null) return inQuotes("");
         return inQuotes(s.toString());
     }
 
     public static String asJsonArray(Stream<String> stream) {
-        return "[" + stream
-            .map(ESLogMessage::inQuotes)
-            .collect(Collectors.joining(", ")) + "]";
+        return "[" + stream.map(ESLogMessage::inQuotes).collect(Collectors.joining(", ")) + "]";
+    }
+
+    public Object[] getArguments() {
+        return arguments.toArray();
+    }
+
+    public String getMessagePattern() {
+        return messagePattern;
     }
 }

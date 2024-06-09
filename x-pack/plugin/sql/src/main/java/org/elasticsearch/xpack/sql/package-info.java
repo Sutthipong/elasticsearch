@@ -1,7 +1,8 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 
 /**
@@ -56,9 +57,9 @@
  * <h2>Concepts</h2>
  *
  * The building operation of the SQL engine is defined by an action,
- * namely a rule (defined in {@link org.elasticsearch.xpack.sql.rule rule}
+ * namely a rule (defined in {@link org.elasticsearch.xpack.ql.rule rule}
  * package that accepts one <i>immutable</i> tree (defined in
- * {@link org.elasticsearch.xpack.sql.tree tree} package) and transforms
+ * {@link org.elasticsearch.xpack.ql.tree tree} package) and transforms
  * it to another <i>immutable</i> tree.
  * Each rules looks for a certain <i>pattern</i> that it can identify and
  * then transform.
@@ -118,9 +119,9 @@
  * To implement the above concepts, several choices have been made in the
  * engine (which are not common in the rest of the XPack code base). In
  * particular the conventions/signatures of
- * {@link org.elasticsearch.xpack.sql.tree.Node tree}s and usage of
+ * {@link org.elasticsearch.xpack.ql.tree.Node tree}s and usage of
  * {@code instanceof} inside
- * {@link org.elasticsearch.xpack.sql.rule.Rule rule}s).
+ * {@link org.elasticsearch.xpack.ql.rule.Rule rule}s).
  * Java doesn't provide any utilities for tree abstractions or pattern
  * matching for that matter. Typically for tree traversal one would employ
  * the <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor</a>
@@ -143,7 +144,7 @@
  * {@code instanceof} checks. Which is how many rules are implemented in
  * the SQL engine as well. Where possible though, one can use <i>typed</i>
  * traversal by passing a {@code Class} token to the lambdas (i.e.
- * {@link org.elasticsearch.xpack.sql.tree.Node#transformDown(java.util.function.Function, Class)
+ * {@link org.elasticsearch.xpack.ql.tree.Node#transformDown(Class, java.util.function.Function)
  * pre-order transformation}).
  *
  * <h2>Components</h2>
@@ -154,7 +155,7 @@
  *  <dd>Tokenizer and Lexer of the SQL grammar. Translates user query into an
  *  AST tree ({@code LogicalPlan}. Makes sure the user query is <b>syntactically</b>
  *  valid.</dd>
- *  <dt>{@link org.elasticsearch.xpack.sql.analysis.analyzer.PreAnalyzer PreAnalyzer}</dt>
+ *  <dt>{@link org.elasticsearch.xpack.ql.analyzer.PreAnalyzer PreAnalyzer}</dt>
  *  <dd>Performs basic inspection of the {@code LogicalPlan} for gathering critical
  *  information for the main analysis. This stage is separate from {@code Analysis}
  *  since it performs async/remote calls to the cluster. </dd>

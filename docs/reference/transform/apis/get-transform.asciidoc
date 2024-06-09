@@ -1,7 +1,5 @@
-[role="xpack"]
-[testenv="basic"]
 [[get-transform]]
-=== Get {transforms} API
+= Get {transforms} API
 
 [subs="attributes"]
 ++++
@@ -10,32 +8,27 @@
 
 Retrieves configuration information for {transforms}.
 
-beta[]
-
 [[get-transform-request]]
-==== {api-request-title}
+== {api-request-title}
 
-`GET _data_frame/transforms/<transform_id>` +
+`GET _transform/<transform_id>` +
 
-`GET _data_frame/transforms/<transform_id>,<transform_id>` +
+`GET _transform/<transform_id>,<transform_id>` +
 
-`GET _data_frame/transforms/` +
+`GET _transform/` +
 
-`GET _data_frame/transforms/_all` +
+`GET _transform/_all` +
 
-`GET _data_frame/transforms/*`
+`GET _transform/*`
 
 [[get-transform-prereqs]]
-==== {api-prereq-title}
+== {api-prereq-title}
 
-* If the {es} {security-features} are enabled, you must have
-`monitor_data_frame_transforms` cluster privileges to use this API. The built-in
-`data_frame_transforms_user` role has these privileges. For more information,
-see {stack-ov}/security-privileges.html[Security privileges] and
-{stack-ov}/built-in-roles.html[Built-in roles].
+Requires the `monitor_transform` cluster privilege. This privilege is included
+in the `transform_user` built-in role.
 
 [[get-transform-desc]]
-==== {api-description-title}
+== {api-description-title}
 
 You can get information for multiple {transforms} in a single API
 request by using a comma-separated list of identifiers or a wildcard expression.
@@ -43,69 +36,78 @@ You can get information for all {transforms} by using `_all`, by
 specifying `*` as the `<transform_id>`, or by omitting the `<transform_id>`.
 
 [[get-transform-path-parms]]
-==== {api-path-parms-title}
+== {api-path-parms-title}
 
 `<transform_id>`::
-  (Optional, string) Identifier for the {transform}. It can be a
-  {transform} identifier or a wildcard expression. If you do not
-  specify one of these options, the API returns information for all
-  {transforms}.
-  
+(Optional, string)
+include::{es-ref-dir}/rest-api/common-parms.asciidoc[tag=transform-id-wildcard]
+
 [[get-transform-query-parms]]
-==== {api-query-parms-title}
+== {api-query-parms-title}
 
 `allow_no_match`::
-(Optional, boolean) Specifies what to do when the request:
-+
---
-* Contains wildcard expressions and there are no {transforms} that match.
-* Contains the `_all` string or no identifiers and there are no matches.
-* Contains wildcard expressions and there are only partial matches. 
+(Optional, Boolean)
+include::{es-ref-dir}/rest-api/common-parms.asciidoc[tag=allow-no-match-transforms1]
 
-The default value is `true`, which returns an empty `transforms` array when
-there are no matches and the subset of results when there are partial matches.
-If this parameter is `false`, the request returns a `404` status code when there
-are no matches or only partial matches.
---
+`exclude_generated`::
+(Optional, Boolean)
+Excludes fields that were automatically added when creating the transform.
+This allows the configuration to be in an acceptable format to be retrieved
+and then added to another cluster. Default is false.
 
 `from`::
-  (Optional, integer) Skips the specified number of {transforms}. The
-  default value is `0`.
+(Optional, integer)
+include::{es-ref-dir}/rest-api/common-parms.asciidoc[tag=from-transforms]
 
 `size`::
-  (Optional, integer) Specifies the maximum number of {transforms} to obtain. The default value is `100`.
+(Optional, integer)
+include::{es-ref-dir}/rest-api/common-parms.asciidoc[tag=size-transforms]
+
+
 
 [[get-transform-response]]
-==== {api-response-body-title}
+== {api-response-body-title}
 
-`transforms`::
-  (array) An array of {transform} resources, which are sorted by the `id` value in
-  ascending order. See <<transform-resource>>.
-  
+The API returns an array of {transform} resources, which are sorted by the `id`
+value in ascending order. For the full list of properties, see
+<<put-transform-request-body,Create {transform} API>>.
+
+`create_time`::
+(string) The time the {transform} was created. For example, `1576094542936`.
+This property is informational; you cannot change its value.
+
+`version`::
+(string) The {transform} configuration version number at which the trained model was created.
+
+NOTE: From {es} 8.10.0,  a new version number is used to
+track the configuration and state changes in the {transform} plugin. This new
+version number is decoupled from the product version and will increment
+independently. The `version` value represents the new version number.
+
 [[get-transform-response-codes]]
-==== {api-response-codes-title}
+== {api-response-codes-title}
 
 `404` (Missing resources)::
   If `allow_no_match` is `false`, this code indicates that there are no
-  resources that match the request or only partial matches for the request.  
+  resources that match the request or only partial matches for the request.
 
 [[get-transform-example]]
-==== {api-examples-title}
+== {api-examples-title}
 
 The following example retrieves information about a maximum of ten {transforms}:
 
 [source,console]
 --------------------------------------------------
-GET _data_frame/transforms?size=10
+GET _transform?size=10
 --------------------------------------------------
 // TEST[skip:setup kibana sample data]
 
 The following example gets configuration information for the
-`ecommerce_transform` {transform}:
+`ecommerce_transform1` {transform}:
 
 [source,console]
 --------------------------------------------------
-GET _data_frame/transforms/ecommerce_transform
+GET _transform/ecommerce_transform1
 --------------------------------------------------
 // TEST[skip:setup kibana sample data]
 
@@ -117,7 +119,14 @@ The API returns the following results:
   "count" : 1,
   "transforms" : [
     {
-      "id" : "ecommerce_transform",
+      "id" : "ecommerce_transform1",
+      "authorization" : {
+        "roles" : [
+          "superuser"
+        ]
+      },
+      "version" : "8.4.0",
+      "create_time" : 1656023416565,
       "source" : {
         "index" : [
           "kibana_sample_data_ecommerce"
@@ -131,9 +140,16 @@ The API returns the following results:
         }
       },
       "dest" : {
-        "index" : "kibana_sample_data_ecommerce_transform"
+        "index" : "kibana_sample_data_ecommerce_transform1",
+        "pipeline" : "add_timestamp_pipeline"
       },
-      "frequency": "1m",
+      "frequency" : "5m",
+      "sync" : {
+        "time" : {
+          "field" : "order_date",
+          "delay" : "60s"
+        }
+      },
       "pivot" : {
         "group_by" : {
           "customer_id" : {
@@ -150,9 +166,15 @@ The API returns the following results:
           }
         }
       },
-      "description" : "Maximum priced ecommerce data by customer_id in Asia"
+      "description" : "Maximum priced ecommerce data by customer_id in Asia",
+      "settings" : { },
+      "retention_policy" : {
+        "time" : {
+          "field" : "order_date",
+          "max_age" : "30d"
+        }
+      }
     }
   ]
 }
-
 ----
